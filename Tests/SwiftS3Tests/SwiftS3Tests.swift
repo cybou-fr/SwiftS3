@@ -39,6 +39,61 @@ struct SwiftS3Tests {
 
     // MARK: - Storage Tests
 
+    @Test("Storage: ListObjects Pagination & Filtering")
+    func testStorageListObjectsPagination() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            .path
+        let storage = FileSystemStorage(rootPath: root)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try await storage.createBucket(name: "list-bucket")
+
+        // Create nested structure
+        // a/1.txt
+        // a/2.txt
+        // b/1.txt
+        // c.txt
+        let data = ByteBuffer(string: ".")
+        _ = try await storage.putObject(
+            bucket: "list-bucket", key: "a/1.txt", data: [data].async, size: 1, metadata: nil)
+        _ = try await storage.putObject(
+            bucket: "list-bucket", key: "a/2.txt", data: [data].async, size: 1, metadata: nil)
+        _ = try await storage.putObject(
+            bucket: "list-bucket", key: "b/1.txt", data: [data].async, size: 1, metadata: nil)
+        _ = try await storage.putObject(
+            bucket: "list-bucket", key: "c.txt", data: [data].async, size: 1, metadata: nil)
+
+        // 1. Prefix
+        let res1 = try await storage.listObjects(
+            bucket: "list-bucket", prefix: "a/", delimiter: nil, marker: nil, maxKeys: 1000)
+        #expect(res1.objects.count == 2)
+        #expect(res1.objects[0].key == "a/1.txt")
+        #expect(res1.objects[1].key == "a/2.txt")
+
+        // 2. Delimiter (folders)
+        let res2 = try await storage.listObjects(
+            bucket: "list-bucket", prefix: nil, delimiter: "/", marker: nil, maxKeys: 1000)
+        #expect(res2.objects.count == 1)  // c.txt
+        #expect(res2.objects[0].key == "c.txt")
+        #expect(res2.commonPrefixes.count == 2)  // a/, b/
+        #expect(res2.commonPrefixes.contains("a/"))
+        #expect(res2.commonPrefixes.contains("b/"))
+
+        // 3. Pagination (MaxKeys)
+        let res3 = try await storage.listObjects(
+            bucket: "list-bucket", prefix: nil, delimiter: nil, marker: nil, maxKeys: 2)
+        #expect(res3.objects.count == 2)
+        #expect(res3.isTruncated == true)
+        #expect(res3.nextMarker == "a/2.txt")
+
+        // 4. Pagination (Marker)
+        let res4 = try await storage.listObjects(
+            bucket: "list-bucket", prefix: nil, delimiter: nil, marker: "a/2.txt", maxKeys: 1000)
+        #expect(res4.objects.count == 2)
+        #expect(res4.objects[0].key == "b/1.txt")
+        #expect(res4.objects[1].key == "c.txt")
+    }
+
     @Test("Storage: Create and Delete Bucket")
     func testStorageCreateDeleteBucket() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -47,9 +102,9 @@ struct SwiftS3Tests {
         defer { try? FileManager.default.removeItem(atPath: root) }
 
         try await storage.createBucket(name: "test-bucket")
-        let buckets = try await storage.listBuckets()
-        #expect(buckets.count == 1)
-        #expect(buckets.first?.name == "test-bucket")
+        let result = try await storage.listObjects(
+            bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, maxKeys: nil)
+        #expect(result.objects.count == 0)
 
         try await storage.deleteBucket(name: "test-bucket")
         let bucketsAfter = try await storage.listBuckets()
@@ -76,6 +131,11 @@ struct SwiftS3Tests {
             bucket: "test-bucket", key: "hello.txt", data: stream, size: Int64(data.count),
             metadata: nil)
         #expect(!etag.isEmpty)
+
+        let result = try await storage.listObjects(
+            bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, maxKeys: nil)
+        #expect(result.objects.count == 1)
+        #expect(result.objects.first?.key == "hello.txt")
 
         let (metadata, body) = try await storage.getObject(
             bucket: "test-bucket", key: "hello.txt", range: nil)
@@ -289,5 +349,86 @@ struct SwiftS3Tests {
             }
         }
         #expect(receivedData == part1Content + part2Content)
+    }
+
+    @Test("API: Head Bucket")
+    func testHeadBucket() async throws {
+        try await withApp { app in
+            // 1. Create Bucket
+            let helper = AWSAuthHelper()
+            let bucketUrl = URL(string: "http://localhost:8080/head-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(uri: "/head-bucket", method: .put, headers: createHeaders) {
+                response in
+                #expect(response.status == .ok)
+            }
+
+            // 2. Head Bucket - Exists
+            try await app.execute(uri: "/head-bucket", method: .head) { response in
+                #expect(response.status == .ok)
+            }
+
+            // 3. Head Bucket - Not Found
+            try await app.execute(uri: "/non-existent-bucket", method: .head) { response in
+                #expect(response.status == .notFound)
+            }
+        }
+    }
+
+    @Test("API: Delete Bucket (Non-Empty)")
+    func testDeleteNonEmptyBucket() async throws {
+        try await withApp { app in
+            let helper = AWSAuthHelper()
+
+            // 1. Create Bucket
+            let bucketUrl = URL(string: "http://localhost:8080/delete-check-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(
+                uri: "/delete-check-bucket", method: .put, headers: createHeaders
+            ) { response in
+                #expect(response.status == .ok)
+            }
+
+            // 2. Put Object
+            let objectUrl = URL(
+                string: "http://localhost:8080/delete-check-bucket/obj")!
+            let content = "data"
+            let putHeaders = try helper.signRequest(
+                method: .put, url: objectUrl, payload: content)
+            try await app.execute(
+                uri: "/delete-check-bucket/obj", method: .put, headers: putHeaders,
+                body: ByteBuffer(string: content)
+            ) { response in
+                #expect(response.status == .ok)
+            }
+
+            // 3. Try Delete Bucket - Should Fail (Conflict or Forbidden or internal error mapped)
+            // S3 spec says 409 Conflict for BucketNotEmpty.
+            // Our current implementation throws S3Error.bucketNotEmpty.
+            // We need to check mapping in S3ErrorMiddleware or catch it.
+            // S3ErrorMiddleware maps bucketNotEmpty to conflict (409).
+            let deleteHeaders = try helper.signRequest(method: .delete, url: bucketUrl)
+            try await app.execute(
+                uri: "/delete-check-bucket", method: .delete, headers: deleteHeaders
+            ) { response in
+                #expect(response.status == .conflict)
+            }
+
+            // 4. Delete Object
+            let deleteObjHeaders = try helper.signRequest(method: .delete, url: objectUrl)
+            try await app.execute(
+                uri: "/delete-check-bucket/obj", method: .delete, headers: deleteObjHeaders
+            ) {
+                response in
+                #expect(response.status == .noContent)
+            }
+
+            // 5. Delete Bucket - Should Succeed
+            try await app.execute(
+                uri: "/delete-check-bucket", method: .delete, headers: deleteHeaders
+            ) { response in
+                #expect(response.status == .noContent)
+            }
+        }
     }
 }

@@ -27,12 +27,23 @@ struct PartInfo: Sendable, Codable {
     let eTag: String
 }
 
+struct ListObjectsResult: Sendable {
+    let objects: [ObjectMetadata]
+    let commonPrefixes: [String]
+    let isTruncated: Bool
+    let nextMarker: String?
+}
+
 protocol StorageBackend: Sendable {
     func listBuckets() async throws -> [(name: String, created: Date)]
     func createBucket(name: String) async throws
     func deleteBucket(name: String) async throws
+    func headBucket(name: String) async throws
 
-    func listObjects(bucket: String) async throws -> [ObjectMetadata]
+    func listObjects(
+        bucket: String, prefix: String?, delimiter: String?, marker: String?, maxKeys: Int?
+    )
+        async throws -> ListObjectsResult
     func putObject<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, data: consuming Stream, size: Int64?,
         metadata: [String: String]?

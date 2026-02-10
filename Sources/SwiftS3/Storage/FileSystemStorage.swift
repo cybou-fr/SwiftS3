@@ -58,6 +58,14 @@ actor FileSystemStorage: StorageBackend {
         try fileManager.removeItem(atPath: path)
     }
 
+    func headBucket(name: String) async throws {
+        let path = bucketPath(name)
+        var isDir: ObjCBool = false
+        if !fileManager.fileExists(atPath: path, isDirectory: &isDir) || !isDir.boolValue {
+            throw S3Error.noSuchBucket
+        }
+    }
+
     func putObject<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, data: consuming Stream, size: Int64?,
         metadata: [String: String]?
@@ -158,30 +166,55 @@ actor FileSystemStorage: StorageBackend {
         }
     }
 
-    func listObjects(bucket: String) async throws -> [ObjectMetadata] {
+    func listObjects(
+        bucket: String, prefix: String?, delimiter: String?, marker: String?, maxKeys: Int?
+    ) async throws -> ListObjectsResult {
         let bPath = bucketPath(bucket)
         if !fileManager.fileExists(atPath: bPath) {
             throw S3Error.noSuchBucket
         }
 
-        let bucketURL = URL(fileURLWithPath: bPath)
+        let bucketURL = URL(fileURLWithPath: bPath).standardizedFileURL
+        let bucketPathString = bucketURL.path
+
         let enumerator = fileManager.enumerator(
             at: bucketURL, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles])
 
-        var objects: [ObjectMetadata] = []
+        var allObjects: [ObjectMetadata] = []
 
         while let url = enumerator?.nextObject() as? URL {
             guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != true else {
                 continue
             }
 
-            let relativeKey = url.path.replacingOccurrences(of: bPath + "/", with: "")
+            let standardURL = url.standardizedFileURL
+            let fullPath = standardURL.path
+
+            guard fullPath.hasPrefix(bucketPathString) else {
+                continue
+            }
+
+            var relativeKey = String(fullPath.dropFirst(bucketPathString.count))
+            if relativeKey.hasPrefix("/") {
+                relativeKey.removeFirst()
+            }
+
+            // Filter by Prefix
+            if let prefix = prefix, !relativeKey.hasPrefix(prefix) {
+                continue
+            }
+
+            // Filter by Marker (lexicographical > marker)
+            if let marker = marker, relativeKey <= marker {
+                continue
+            }
+
             let values = try url.resourceValues(forKeys: [
                 .fileSizeKey, .contentModificationDateKey,
             ])
 
-            objects.append(
+            allObjects.append(
                 ObjectMetadata(
                     key: relativeKey,
                     size: Int64(values.fileSize ?? 0),
@@ -189,7 +222,61 @@ actor FileSystemStorage: StorageBackend {
                     eTag: nil
                 ))
         }
-        return objects
+
+        // Sort by Key
+        allObjects.sort { $0.key < $1.key }
+
+        // Apply Delimiter (Grouping)
+        var objects: [ObjectMetadata] = []
+        var commonPrefixes: Set<String> = []
+        var truncated = false
+        var nextMarker: String? = nil
+
+        let limit = maxKeys ?? 1000
+        var count = 0
+
+        // We need to keep track of the last seen "rolled up" prefix to avoid duplicates in the run
+        var lastPrefix: String? = nil
+
+        for obj in allObjects {
+            if count >= limit {
+                truncated = true
+                nextMarker = objects.last?.key
+                break
+            }
+
+            let key = obj.key
+            var isCommonPrefix = false
+            var currentPrefix = ""
+
+            if let delimiter = delimiter {
+                let prefixLen = prefix?.count ?? 0
+                let searchRange = key.index(key.startIndex, offsetBy: prefixLen)..<key.endIndex
+
+                if let range = key.range(of: delimiter, range: searchRange) {
+                    currentPrefix = String(key[..<range.upperBound])
+                    isCommonPrefix = true
+                }
+            }
+
+            if isCommonPrefix {
+                if currentPrefix != lastPrefix {
+                    commonPrefixes.insert(currentPrefix)
+                    lastPrefix = currentPrefix
+                    count += 1
+                }
+            } else {
+                objects.append(obj)
+                count += 1
+            }
+        }
+
+        return ListObjectsResult(
+            objects: objects,
+            commonPrefixes: Array(commonPrefixes).sorted(),
+            isTruncated: truncated,
+            nextMarker: nextMarker
+        )
     }
 
     func getObjectMetadata(bucket: String, key: String) async throws -> ObjectMetadata {

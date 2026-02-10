@@ -25,6 +25,11 @@ struct S3Controller {
             use: { request, context in
                 try await self.deleteBucket(request: request, context: context)
             })
+        router.head(
+            ":bucket",
+            use: { request, context in
+                try await self.headBucket(request: request, context: context)
+            })
         router.get(
             ":bucket",
             use: { request, context in
@@ -86,12 +91,30 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
+    @Sendable func headBucket(request: Request, context: some RequestContext) async throws
+        -> Response
+    {
+        let bucket = try context.parameters.require("bucket")
+        try await storage.headBucket(name: bucket)
+        return Response(status: .ok)
+    }
+
     @Sendable func listObjects(request: Request, context: some RequestContext) async throws
         -> Response
     {
         let bucket = try context.parameters.require("bucket")
-        let objects = try await storage.listObjects(bucket: bucket)
-        let xml = XML.listObjects(bucket: bucket, objects: objects)
+        let query = parseQuery(request.uri.query)
+        let prefix = query["prefix"]
+        let delimiter = query["delimiter"]
+        let marker = query["marker"]
+        let maxKeys = query["max-keys"].flatMap { Int($0) }
+
+        let result = try await storage.listObjects(
+            bucket: bucket, prefix: prefix, delimiter: delimiter, marker: marker, maxKeys: maxKeys)
+
+        let xml = XML.listObjects(
+            bucket: bucket, result: result, prefix: prefix ?? "", marker: marker ?? "",
+            maxKeys: maxKeys ?? 1000, isTruncated: result.isTruncated)
         let headers: HTTPFields = [.contentType: "application/xml"]
         return Response(
             status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(string: xml)))
