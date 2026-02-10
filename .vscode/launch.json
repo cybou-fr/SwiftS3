@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:SwiftS3}",
+            "name": "Debug SwiftS3",
+            "target": "SwiftS3",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug SwiftS3"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:SwiftS3}",
+            "name": "Release SwiftS3",
+            "target": "SwiftS3",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release SwiftS3"
+        }
+    ]
+}
