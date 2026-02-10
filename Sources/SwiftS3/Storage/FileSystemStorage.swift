@@ -210,7 +210,8 @@ actor FileSystemStorage: StorageBackend {
     }
 
     func listObjects(
-        bucket: String, prefix: String?, delimiter: String?, marker: String?, maxKeys: Int?
+        bucket: String, prefix: String?, delimiter: String?, marker: String?,
+        continuationToken: String?, maxKeys: Int?
     ) async throws -> ListObjectsResult {
         let bPath = bucketPath(bucket)
         if !fileManager.fileExists(atPath: bPath) {
@@ -248,8 +249,16 @@ actor FileSystemStorage: StorageBackend {
                 continue
             }
 
-            // Filter by Marker (lexicographical > marker)
-            if let marker = marker, relativeKey <= marker {
+            // Ignore internal metadata files
+            if relativeKey.hasSuffix(".metadata") || relativeKey.contains("/.uploads/") {
+                continue
+            }
+
+            // Filter by Marker (V1) or ContinuationToken (V2)
+            // For V2, startAfter is also key, but continuationToken is usually an opaque token (often base64 of key).
+            // For simple implementation, we assume continuationToken IS the key to start after.
+            let startAfter = continuationToken ?? marker
+            if let startAfter = startAfter, relativeKey <= startAfter {
                 continue
             }
 
@@ -274,6 +283,7 @@ actor FileSystemStorage: StorageBackend {
         var commonPrefixes: Set<String> = []
         var truncated = false
         var nextMarker: String? = nil
+        var nextContinuationToken: String? = nil
 
         let limit = maxKeys ?? 1000
         var count = 0
@@ -285,6 +295,7 @@ actor FileSystemStorage: StorageBackend {
             if count >= limit {
                 truncated = true
                 nextMarker = objects.last?.key
+                nextContinuationToken = objects.last?.key  // Use key as token for now
                 break
             }
 
@@ -318,7 +329,8 @@ actor FileSystemStorage: StorageBackend {
             objects: objects,
             commonPrefixes: Array(commonPrefixes).sorted(),
             isTruncated: truncated,
-            nextMarker: nextMarker
+            nextMarker: nextMarker,
+            nextContinuationToken: nextContinuationToken
         )
     }
 

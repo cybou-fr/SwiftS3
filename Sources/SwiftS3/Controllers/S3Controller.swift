@@ -107,14 +107,27 @@ struct S3Controller {
         let prefix = query["prefix"]
         let delimiter = query["delimiter"]
         let marker = query["marker"]
+        let listType = query["list-type"]
+        let continuationToken = query["continuation-token"]
         let maxKeys = query["max-keys"].flatMap { Int($0) }
 
         let result = try await storage.listObjects(
-            bucket: bucket, prefix: prefix, delimiter: delimiter, marker: marker, maxKeys: maxKeys)
+            bucket: bucket, prefix: prefix, delimiter: delimiter, marker: marker,
+            continuationToken: continuationToken, maxKeys: maxKeys)
 
-        let xml = XML.listObjects(
-            bucket: bucket, result: result, prefix: prefix ?? "", marker: marker ?? "",
-            maxKeys: maxKeys ?? 1000, isTruncated: result.isTruncated)
+        let xml: String
+        if listType == "2" {
+            xml = XML.listObjectsV2(
+                bucket: bucket, result: result, prefix: prefix ?? "",
+                continuationToken: continuationToken ?? "", maxKeys: maxKeys ?? 1000,
+                isTruncated: result.isTruncated,
+                keyCount: result.objects.count + result.commonPrefixes.count)
+        } else {
+            xml = XML.listObjects(
+                bucket: bucket, result: result, prefix: prefix ?? "", marker: marker ?? "",
+                maxKeys: maxKeys ?? 1000, isTruncated: result.isTruncated)
+        }
+
         let headers: HTTPFields = [.contentType: "application/xml"]
         return Response(
             status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(string: xml)))

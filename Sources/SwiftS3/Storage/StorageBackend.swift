@@ -32,6 +32,18 @@ struct ListObjectsResult: Sendable {
     let commonPrefixes: [String]
     let isTruncated: Bool
     let nextMarker: String?
+    let nextContinuationToken: String?
+
+    init(
+        objects: [ObjectMetadata], commonPrefixes: [String], isTruncated: Bool,
+        nextMarker: String? = nil, nextContinuationToken: String? = nil
+    ) {
+        self.objects = objects
+        self.commonPrefixes = commonPrefixes
+        self.isTruncated = isTruncated
+        self.nextMarker = nextMarker
+        self.nextContinuationToken = nextContinuationToken
+    }
 }
 
 protocol StorageBackend: Sendable {
@@ -41,7 +53,8 @@ protocol StorageBackend: Sendable {
     func headBucket(name: String) async throws
 
     func listObjects(
-        bucket: String, prefix: String?, delimiter: String?, marker: String?, maxKeys: Int?
+        bucket: String, prefix: String?, delimiter: String?, marker: String?,
+        continuationToken: String?, maxKeys: Int?
     )
         async throws -> ListObjectsResult
 

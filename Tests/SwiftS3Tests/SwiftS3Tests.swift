@@ -65,14 +65,16 @@ struct SwiftS3Tests {
 
         // 1. Prefix
         let res1 = try await storage.listObjects(
-            bucket: "list-bucket", prefix: "a/", delimiter: nil, marker: nil, maxKeys: 1000)
+            bucket: "list-bucket", prefix: "a/", delimiter: nil, marker: nil,
+            continuationToken: nil, maxKeys: 1000)
         #expect(res1.objects.count == 2)
         #expect(res1.objects[0].key == "a/1.txt")
         #expect(res1.objects[1].key == "a/2.txt")
 
         // 2. Delimiter (folders)
         let res2 = try await storage.listObjects(
-            bucket: "list-bucket", prefix: nil, delimiter: "/", marker: nil, maxKeys: 1000)
+            bucket: "list-bucket", prefix: nil, delimiter: "/", marker: nil, continuationToken: nil,
+            maxKeys: 1000)
         #expect(res2.objects.count == 1)  // c.txt
         #expect(res2.objects[0].key == "c.txt")
         #expect(res2.commonPrefixes.count == 2)  // a/, b/
@@ -81,14 +83,16 @@ struct SwiftS3Tests {
 
         // 3. Pagination (MaxKeys)
         let res3 = try await storage.listObjects(
-            bucket: "list-bucket", prefix: nil, delimiter: nil, marker: nil, maxKeys: 2)
+            bucket: "list-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil,
+            maxKeys: 2)
         #expect(res3.objects.count == 2)
         #expect(res3.isTruncated == true)
         #expect(res3.nextMarker == "a/2.txt")
 
         // 4. Pagination (Marker)
         let res4 = try await storage.listObjects(
-            bucket: "list-bucket", prefix: nil, delimiter: nil, marker: "a/2.txt", maxKeys: 1000)
+            bucket: "list-bucket", prefix: nil, delimiter: nil, marker: "a/2.txt",
+            continuationToken: nil, maxKeys: 1000)
         #expect(res4.objects.count == 2)
         #expect(res4.objects[0].key == "b/1.txt")
         #expect(res4.objects[1].key == "c.txt")
@@ -142,7 +146,8 @@ struct SwiftS3Tests {
 
         try await storage.createBucket(name: "test-bucket")
         let result = try await storage.listObjects(
-            bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, maxKeys: nil)
+            bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil,
+            maxKeys: nil)
         #expect(result.objects.count == 0)
 
         try await storage.deleteBucket(name: "test-bucket")
@@ -172,7 +177,8 @@ struct SwiftS3Tests {
         #expect(!etag.isEmpty)
 
         let result = try await storage.listObjects(
-            bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, maxKeys: nil)
+            bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil,
+            maxKeys: nil)
         #expect(result.objects.count == 1)
         #expect(result.objects.first?.key == "hello.txt")
 
@@ -198,6 +204,40 @@ struct SwiftS3Tests {
                 #expect(response.status == .ok)
                 let body = String(buffer: response.body)
                 #expect(body.contains("<ListAllMyBucketsResult>"))
+            }
+        }
+    }
+
+    @Test("API: List Objects V2")
+    func testAPIListObjectsV2() async throws {
+        try await withApp { app in
+            // Create Bucket
+            let helper = AWSAuthHelper()
+            let bucketUrl = URL(string: "http://localhost:8080/v2-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(uri: "/v2-bucket", method: .put, headers: createHeaders) { _ in }
+
+            // Put Objects
+            for i in 1...3 {
+                let objectUrl = URL(string: "http://localhost:8080/v2-bucket/obj\(i)")!
+                let headers = try helper.signRequest(method: .put, url: objectUrl, payload: "data")
+                try await app.execute(
+                    uri: "/v2-bucket/obj\(i)", method: .put, headers: headers,
+                    body: ByteBuffer(string: "data")
+                ) { _ in }
+            }
+
+            // List V2
+            let listUrl = URL(string: "http://localhost:8080/v2-bucket?list-type=2")!
+            let listHeaders = try helper.signRequest(method: .get, url: listUrl)
+            try await app.execute(uri: "/v2-bucket?list-type=2", method: .get, headers: listHeaders)
+            {
+                response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body.contains("<ListBucketResult"))
+                #expect(body.contains("<KeyCount>3</KeyCount>"))
+                #expect(body.contains("<Key>obj1</Key>"))
             }
         }
     }

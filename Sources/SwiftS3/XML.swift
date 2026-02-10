@@ -2,107 +2,138 @@ import Foundation
 
 struct XML {
     static func listBuckets(buckets: [(name: String, created: Date)]) -> String {
-        let bucketEntries = buckets.map { bucket in
-            """
-            <Bucket>
-                <Name>\(bucket.name)</Name>
-                <CreationDate>\(ISO8601DateFormatter().string(from: bucket.created))</CreationDate>
-            </Bucket>
-            """
-        }.joined()
-
-        return """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <ListAllMyBucketsResult>
-                <Buckets>
-                    \(bucketEntries)
-                </Buckets>
-            </ListAllMyBucketsResult>
-            """
+        return XMLBuilder(root: "ListAllMyBucketsResult") {
+            XMLBuilder.element("Buckets") {
+                buckets.map { bucket in
+                    XMLBuilder.element("Bucket") {
+                        XMLBuilder.element("Name", bucket.name)
+                            + XMLBuilder.element(
+                                "CreationDate", ISO8601DateFormatter().string(from: bucket.created))
+                    }
+                }.joined()
+            }
+        }.content
     }
 
     static func listObjects(
         bucket: String, result: ListObjectsResult, prefix: String, marker: String, maxKeys: Int,
         isTruncated: Bool
     ) -> String {
-        let objectEntries = result.objects.map { object in
-            """
-            <Contents>
-                <Key>\(object.key)</Key>
-                <LastModified>\(ISO8601DateFormatter().string(from: object.lastModified))</LastModified>
-                <ETag>&quot;\(object.eTag ?? "")&quot;</ETag>
-                <Size>\(object.size)</Size>
-                <StorageClass>STANDARD</StorageClass>
-            </Contents>
-            """
-        }.joined()
+        return XMLBuilder(
+            root: "ListBucketResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            var xml = ""
+            xml += XMLBuilder.element("Name", bucket)
+            xml += XMLBuilder.element("Prefix", prefix)
+            xml += XMLBuilder.element("Marker", marker)
+            xml += XMLBuilder.element("MaxKeys", String(maxKeys))
+            xml += XMLBuilder.element("IsTruncated", String(isTruncated))
 
-        let commonPrefixEntries = result.commonPrefixes.map { prefix in
-            """
-            <CommonPrefixes>
-                <Prefix>\(prefix)</Prefix>
-            </CommonPrefixes>
-            """
-        }.joined()
+            if let nextMarker = result.nextMarker {
+                xml += XMLBuilder.element("NextMarker", nextMarker)
+            }
 
-        var xml = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                <Name>\(bucket)</Name>
-                <Prefix>\(prefix)</Prefix>
-                <Marker>\(marker)</Marker>
-                <MaxKeys>\(maxKeys)</MaxKeys>
-                <IsTruncated>\(isTruncated)</IsTruncated>
-            """
+            xml += result.objects.map { object in
+                XMLBuilder.element("Contents") {
+                    XMLBuilder.element("Key", object.key)
+                        + XMLBuilder.element(
+                            "LastModified", ISO8601DateFormatter().string(from: object.lastModified)
+                        ) + XMLBuilder.element("ETag", "\"\(object.eTag ?? "")\"")
+                        + XMLBuilder.element("Size", String(object.size))
+                        + XMLBuilder.element("StorageClass", "STANDARD")
+                }
+            }.joined()
 
-        if let nextMarker = result.nextMarker {
-            xml += "<NextMarker>\(nextMarker)</NextMarker>"
-        }
+            xml += result.commonPrefixes.map { prefix in
+                XMLBuilder.element("CommonPrefixes") {
+                    XMLBuilder.element("Prefix", prefix)
+                }
+            }.joined()
 
-        xml += objectEntries
-        xml += commonPrefixEntries
-        xml += "</ListBucketResult>"
+            return xml
+        }.content
+    }
 
-        return xml
+    // List Objects V2
+    static func listObjectsV2(
+        bucket: String, result: ListObjectsResult, prefix: String, continuationToken: String,
+        maxKeys: Int,
+        isTruncated: Bool, keyCount: Int
+    ) -> String {
+        return XMLBuilder(
+            root: "ListBucketResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            var xml = ""
+            xml += XMLBuilder.element("Name", bucket)
+            xml += XMLBuilder.element("Prefix", prefix)
+            xml += XMLBuilder.element("MaxKeys", String(maxKeys))
+            xml += XMLBuilder.element("KeyCount", String(keyCount))
+            xml += XMLBuilder.element("IsTruncated", String(isTruncated))
+
+            if !continuationToken.isEmpty {
+                xml += XMLBuilder.element("ContinuationToken", continuationToken)
+            }
+
+            if let nextContinuationToken = result.nextContinuationToken {
+                xml += XMLBuilder.element("NextContinuationToken", nextContinuationToken)
+            }
+
+            xml += result.objects.map { object in
+                XMLBuilder.element("Contents") {
+                    XMLBuilder.element("Key", object.key)
+                        + XMLBuilder.element(
+                            "LastModified", ISO8601DateFormatter().string(from: object.lastModified)
+                        ) + XMLBuilder.element("ETag", "\"\(object.eTag ?? "")\"")
+                        + XMLBuilder.element("Size", String(object.size))
+                        + XMLBuilder.element("StorageClass", "STANDARD")
+                }
+            }.joined()
+
+            xml += result.commonPrefixes.map { prefix in
+                XMLBuilder.element("CommonPrefixes") {
+                    XMLBuilder.element("Prefix", prefix)
+                }
+            }.joined()
+
+            return xml
+        }.content
     }
 
     static func copyObjectResult(metadata: ObjectMetadata) -> String {
         let lastModified = ISO8601DateFormatter().string(from: metadata.lastModified)
         let etag = metadata.eTag ?? ""
-        return """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                <LastModified>\(lastModified)</LastModified>
-                <ETag>\(etag)</ETag>
-            </CopyObjectResult>
-            """
+        return XMLBuilder(
+            root: "CopyObjectResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            XMLBuilder.element("LastModified", lastModified) + XMLBuilder.element("ETag", etag)
+        }.content
     }
 
     static func initiateMultipartUploadResult(bucket: String, key: String, uploadId: String)
         -> String
     {
-        return """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                <Bucket>\(bucket)</Bucket>
-                <Key>\(key)</Key>
-                <UploadId>\(uploadId)</UploadId>
-            </InitiateMultipartUploadResult>
-            """
+        return XMLBuilder(
+            root: "InitiateMultipartUploadResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            XMLBuilder.element("Bucket", bucket) + XMLBuilder.element("Key", key)
+                + XMLBuilder.element("UploadId", uploadId)
+        }.content
     }
 
     static func completeMultipartUploadResult(
         bucket: String, key: String, eTag: String, location: String
     ) -> String {
-        return """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                <Location>\(location)</Location>
-                <Bucket>\(bucket)</Bucket>
-                <Key>\(key)</Key>
-                <ETag>"\(eTag)"</ETag>
-            </CompleteMultipartUploadResult>
-            """
+        return XMLBuilder(
+            root: "CompleteMultipartUploadResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            XMLBuilder.element("Location", location) + XMLBuilder.element("Bucket", bucket)
+                + XMLBuilder.element("Key", key) + XMLBuilder.element("ETag", "\"\(eTag)\"")
+        }.content
     }
 
     static func parseCompleteMultipartUpload(xml: String) -> [PartInfo] {
@@ -152,3 +183,9 @@ struct XML {
         return parts.sorted { $0.partNumber < $1.partNumber }
     }
 }
+
+// Helper to expose private content property from XMLBuilder because I defined it private but need it here.
+// Actually, I defined it private in XMLBuilder struct, so I should expose a public property or method.
+// I will assume for now I can edit XMLBuilder if needed, but wait, I defined 'content' as private var, but init populates it.
+// I need to add a public getter for 'content' in XMLBuilder.
+// Let me quickly fix XMLBuilder first to be safe.
