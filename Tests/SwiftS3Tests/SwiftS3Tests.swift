@@ -94,6 +94,45 @@ struct SwiftS3Tests {
         #expect(res4.objects[1].key == "c.txt")
     }
 
+    @Test("Storage: Copy Object")
+    func testStorageCopyObject() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString
+        )
+        .path
+        let storage = FileSystemStorage(rootPath: root)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try await storage.createBucket(name: "src-bucket")
+        try await storage.createBucket(name: "dst-bucket")
+
+        let data = ByteBuffer(string: "Copy Me")
+        let metadata = ["x-amz-meta-original": "true"]
+        _ = try await storage.putObject(
+            bucket: "src-bucket", key: "source.txt", data: [data].async,
+            size: Int64(data.readableBytes), metadata: metadata)
+
+        // Copy
+        let copyMeta = try await storage.copyObject(
+            fromBucket: "src-bucket", fromKey: "source.txt", toBucket: "dst-bucket",
+            toKey: "copied.txt")
+
+        #expect(copyMeta.key == "copied.txt")
+        #expect(copyMeta.size == Int64(data.readableBytes))
+        #expect(copyMeta.customMetadata["x-amz-meta-original"] == "true")
+
+        // Verify content
+        let (_, body) = try await storage.getObject(
+            bucket: "dst-bucket", key: "copied.txt", range: nil)
+        var received = ""
+        if let body = body {
+            for await chunk in body {
+                received += String(buffer: chunk)
+            }
+        }
+        #expect(received == "Copy Me")
+    }
+
     @Test("Storage: Create and Delete Bucket")
     func testStorageCreateDeleteBucket() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

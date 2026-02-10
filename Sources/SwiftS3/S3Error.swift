@@ -48,6 +48,10 @@ struct S3Error: Error {
         message:
             "One or more of the specified parts could not be found. The part may not have been uploaded, or the specified entity tag may not match the part's entity tag.",
         statusCode: .badRequest)
+    static let invalidRequest = S3Error(
+        code: "InvalidRequest",
+        message: "The request is invalid.",
+        statusCode: .badRequest)
 }
 
 extension S3Error: ResponseGenerator {

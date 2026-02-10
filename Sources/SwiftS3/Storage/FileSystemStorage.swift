@@ -166,6 +166,49 @@ actor FileSystemStorage: StorageBackend {
         }
     }
 
+    func copyObject(fromBucket: String, fromKey: String, toBucket: String, toKey: String)
+        async throws -> ObjectMetadata
+    {
+        let srcPath = getObjectPath(bucket: fromBucket, key: fromKey)
+        let dstPath = getObjectPath(bucket: toBucket, key: toKey)
+
+        guard fileManager.fileExists(atPath: srcPath) else {
+            throw S3Error.noSuchKey
+        }
+
+        // Ensure destination bucket exists (implicit check via path generation? No, check bucket existence)
+        let dstBucketPath = bucketPath(toBucket)
+        if !fileManager.fileExists(atPath: dstBucketPath) {
+            throw S3Error.noSuchBucket
+        }
+
+        // Ensure destination directory exists
+        let dstURL = URL(fileURLWithPath: dstPath)
+        try fileManager.createDirectory(
+            at: dstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        // Remove destination if exists (overwrite)
+        if fileManager.fileExists(atPath: dstPath) {
+            try fileManager.removeItem(atPath: dstPath)
+        }
+        let dstMetaPath = dstPath + ".metadata"
+        if fileManager.fileExists(atPath: dstMetaPath) {
+            try? fileManager.removeItem(atPath: dstMetaPath)
+        }
+
+        // Copy File
+        try fileManager.copyItem(atPath: srcPath, toPath: dstPath)
+
+        // Copy Metadata
+        let srcMetaPath = srcPath + ".metadata"
+        if fileManager.fileExists(atPath: srcMetaPath) {
+            try fileManager.copyItem(atPath: srcMetaPath, toPath: dstMetaPath)
+        }
+
+        // Return new metadata
+        return try await getObjectMetadata(bucket: toBucket, key: toKey)
+    }
+
     func listObjects(
         bucket: String, prefix: String?, delimiter: String?, marker: String?, maxKeys: Int?
     ) async throws -> ListObjectsResult {

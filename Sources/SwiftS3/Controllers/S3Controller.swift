@@ -142,6 +142,30 @@ struct S3Controller {
             return Response(status: .ok, headers: [.eTag: etag])
         }
 
+        // Check for Copy Source
+        if let copySource = request.headers[HTTPField.Name("x-amz-copy-source")!] {
+            // Format: /bucket/key or bucket/key
+            // Removing leading slash if present
+            var source = copySource
+            if source.hasPrefix("/") {
+                source.removeFirst()
+            }
+            let components = source.split(separator: "/", maxSplits: 1)
+            guard components.count == 2 else {
+                throw S3Error.invalidRequest  // Or bad request
+            }
+            let srcBucket = String(components[0])
+            let srcKey = String(components[1])
+
+            let metadata = try await storage.copyObject(
+                fromBucket: srcBucket, fromKey: srcKey, toBucket: bucket, toKey: key)
+
+            let xml = XML.copyObjectResult(metadata: metadata)
+            return Response(
+                status: .ok, headers: [.contentType: "application/xml"],
+                body: .init(byteBuffer: ByteBuffer(string: xml)))
+        }
+
         // Extract Metadata
         var metadata: [String: String] = [:]
         for field in request.headers {

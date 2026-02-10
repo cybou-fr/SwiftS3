@@ -44,6 +44,10 @@ protocol StorageBackend: Sendable {
         bucket: String, prefix: String?, delimiter: String?, marker: String?, maxKeys: Int?
     )
         async throws -> ListObjectsResult
+
+    func copyObject(fromBucket: String, fromKey: String, toBucket: String, toKey: String)
+        async throws -> ObjectMetadata
+
     func putObject<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, data: consuming Stream, size: Int64?,
         metadata: [String: String]?

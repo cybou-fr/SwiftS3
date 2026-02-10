@@ -65,6 +65,19 @@ struct XML {
 
         return xml
     }
+
+    static func copyObjectResult(metadata: ObjectMetadata) -> String {
+        let lastModified = ISO8601DateFormatter().string(from: metadata.lastModified)
+        let etag = metadata.eTag ?? ""
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <LastModified>\(lastModified)</LastModified>
+                <ETag>\(etag)</ETag>
+            </CopyObjectResult>
+            """
+    }
+
     static func initiateMultipartUploadResult(bucket: String, key: String, uploadId: String)
         -> String
     {

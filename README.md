@@ -16,6 +16,7 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Create Bucket**: `PUT /:bucket`
 - **Delete Bucket**: `DELETE /:bucket`
 - **List Objects**: `GET /:bucket`
+    - Supports `prefix`, `delimiter`, `marker`, and `max-keys` query parameters.
 
 ### Objects
 - **Put Object**: `PUT /:bucket/:key`
