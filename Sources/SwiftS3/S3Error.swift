@@ -60,3 +60,15 @@ extension S3Error: ResponseGenerator {
             body: .init(byteBuffer: ByteBuffer(string: self.xml)))
     }
 }
+
+struct S3ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
+    func handle(_ request: Input, context: Context, next: (Input, Context) async throws -> Output)
+        async throws -> Output
+    {
+        do {
+            return try await next(request, context)
+        } catch let error as S3Error {
+            return try error.response(from: request, context: context)
+        }
+    }
+}

@@ -23,6 +23,7 @@ struct SwiftS3Tests {
 
         let router = Router()
         router.middlewares.add(S3Authenticator())
+        router.middlewares.add(S3ErrorMiddleware())
         controller.addRoutes(to: router)
 
         let app = Application(
@@ -105,20 +106,68 @@ struct SwiftS3Tests {
     @Test("API: Create Bucket (Auth Required - Fail)")
     func testAPICreateBucketAuthFail() async throws {
         try await withApp { app in
-            // Authenticator allows anonymous if no header is present,
-            // BUT S3 usually requires auth for writes.
-            // Our current S3Authenticator implementation allows everything if no header provided
-            // UNLESS the operation specifically checks permissions (which it doesn't currently).
-            // However, if we provide a BAD header, it should fail.
-
             try await app.execute(
                 uri: "/mybucket", method: HTTPTypes.HTTPRequest.Method.put,
                 headers: [HTTPField.Name.authorization: "AWS4-HMAC-SHA256 BADHEADER"]
             ) { response in
-                // Currently S3Authenticator throws S3Error.signatureDoesNotMatch if bad header
-                // Note: Hummingbird might return 500 for unhandled errors, or we need to map S3Error to Response
-                // Let's see what happens.
                 #expect(response.status != HTTPResponse.Status.ok)
+            }
+        }
+    }
+
+    @Test("API: List Buckets (Auth Success)")
+    func testAPIListBucketsAuthSuccess() async throws {
+        try await withApp { app in
+            let helper = AWSAuthHelper()
+            let url = URL(string: "http://localhost:8080/")!
+            let headers = try helper.signRequest(method: .get, url: url)
+
+            try await app.execute(uri: "/", method: .get, headers: headers) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body.contains("<ListAllMyBucketsResult>"))
+            }
+        }
+    }
+
+    @Test("API: Put Object (Auth Success)")
+    func testAPIPutObjectAuthSuccess() async throws {
+        try await withApp { app in
+            // 1. Create Bucket first (auth optional/required but let's assume we can do it)
+            // For simplicity in this test, we might fallback to storage directly to prep environment?
+            // BUT tests usually run in isolation.
+            // Let's use valid auth to create bucket too.
+            let helper = AWSAuthHelper()
+
+            // Create Bucket
+            let bucketUrl = URL(string: "http://localhost:8080/auth-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(uri: "/auth-bucket", method: .put, headers: createHeaders) {
+                response in
+                #expect(response.status == .ok)
+            }
+
+            // Put Object
+            let objectUrl = URL(string: "http://localhost:8080/auth-bucket/test.txt")!
+            let content = "Auth Content"
+            let putHeaders = try helper.signRequest(method: .put, url: objectUrl, payload: content)
+
+            try await app.execute(
+                uri: "/auth-bucket/test.txt", method: .put, headers: putHeaders,
+                body: ByteBuffer(string: content)
+            ) { response in
+                #expect(response.status == .ok)
+                #expect(response.headers[.eTag] != nil)
+            }
+        }
+    }
+
+    @Test("API: Error Handling (404)")
+    func testAPI_ErrorHandling() async throws {
+        try await withApp { app in
+            try await app.execute(uri: "/non-existent-bucket/key", method: .get) { response in
+                // Expect 404 Not Found
+                #expect(response.status == .notFound)
             }
         }
     }

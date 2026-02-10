@@ -33,9 +33,6 @@ struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
 
     // ... Placeholder for helper methods
     func verifySignature(request: Request, authHeader: String) async throws -> Bool {
-        let stderr = FileHandle.standardError
-        stderr.write(Data("DEBUG: verifySignature called.\n".utf8))
-
         // Parse Authorization Header
         // Example: AWS4-HMAC-SHA256 Credential=admin/20260210/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=...
 
