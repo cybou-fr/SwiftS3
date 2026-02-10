@@ -19,9 +19,19 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 
 ### Objects
 - **Put Object**: `PUT /:bucket/:key`
+    - Supports `x-amz-meta-*` headers for custom metadata.
+    - Supports `Content-Type` persistence.
 - **Get Object**: `GET /:bucket/:key`
+    - Supports `Range` header for partial content (e.g., `bytes=0-10`).
+    - Returns persisted metadata and content type.
 - **Delete Object**: `DELETE /:bucket/:key`
 - **Head Object**: `HEAD /:bucket/:key`
+
+### Multipart Upload
+- **Initiate Multipart Upload**: `POST /:bucket/:key?uploads`
+- **Upload Part**: `PUT /:bucket/:key?partNumber=:partNumber&uploadId=:uploadId`
+- **Complete Multipart Upload**: `POST /:bucket/:key?uploadId=:uploadId`
+- **Abort Multipart Upload**: `DELETE /:bucket/:key?uploadId=:uploadId`
 
 ## Requirements
 
@@ -55,11 +65,11 @@ swift run SwiftS3
 
 You can configure the server using command-line arguments:
 
-| Option | Shorthand | Default | Description |
-|--------|-----------|---------|-------------|
-| `--port` | `-p` | `8080` | Port to bind the server to. |
-| `--hostname` | `-h` | `127.0.0.1` | Hostname to bind the server to. |
-| `--storage` | `-s` | `./data` | Directory path for storing data. |
+| Option       | Shorthand | Default     | Description                      |
+|--------------|-----------|-------------|----------------------------------|
+| `--port`     |    `-p`   |    `8080`   | Port to bind the server to.      |
+| `--hostname` |    `-h`   | `127.0.0.1` | Hostname to bind the server to.  |
+| `--storage`  |    `-s`   | `./data`    | Directory path for storing data. |
 
 **Example:**
 
