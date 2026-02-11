@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Hummingbird
+import Logging
 
 @main
 struct SwiftS3: AsyncParsableCommand {
@@ -39,7 +40,6 @@ struct SwiftS3: AsyncParsableCommand {
         let server = S3Server(
             hostname: hostname, port: port, storagePath: storage,
             accessKey: finalAccessKey, secretKey: finalSecretKey)
-        print("Starting SwiftS3 server on \(hostname):\(port) with storage at \(storage)")
         try await server.run()
     }
 }

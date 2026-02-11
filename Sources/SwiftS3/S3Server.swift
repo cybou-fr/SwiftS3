@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Hummingbird
+import Logging
 import NIO
 
 struct S3Server {
@@ -11,35 +12,46 @@ struct S3Server {
     let secretKey: String
 
     func run() async throws {
+        let logger = Logger(label: "SwiftS3")
+
         let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let threadPool = NIOThreadPool(numberOfThreads: 2)
         threadPool.start()
-        
+
+        logger.info(
+            "Initializing SQLite metadata store",
+            metadata: ["path": "\(storagePath)/metadata.sqlite"])
         let metadataStore = try await SQLMetadataStore.create(
-            path: storagePath + "/metadata.sqlite", 
+            path: storagePath + "/metadata.sqlite",
             on: elg,
             threadPool: threadPool
         )
         // Ensure storage directory exists for sqlite file
-        try? FileManager.default.createDirectory(atPath: storagePath, withIntermediateDirectories: true)
-        
+        try? FileManager.default.createDirectory(
+            atPath: storagePath, withIntermediateDirectories: true)
+
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
         let controller = S3Controller(storage: storage)
 
         let router = Router()
+        router.middlewares.add(S3RequestLogger())
         router.middlewares.add(S3ErrorMiddleware())
         router.middlewares.add(S3Authenticator(accessKey: accessKey, secretKey: secretKey))
         controller.addRoutes(to: router)
 
+        logger.info(
+            "Starting server",
+            metadata: ["hostname": "\(hostname)", "port": "\(port)", "storage": "\(storagePath)"])
+
         let app = Application(
             router: router,
             configuration: .init(address: .hostname(hostname, port: port)),
-            eventLoopGroupProvider: .shared(elg) 
+            eventLoopGroupProvider: .shared(elg)
         )
 
         try await app.runService()
-        
-        try await metadataStore.shutdown()
+
+        logger.info("Shutting down")
         try await metadataStore.shutdown()
         try await threadPool.shutdownGracefully()
         try await elg.shutdownGracefully()

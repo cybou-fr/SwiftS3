@@ -51,11 +51,11 @@ struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
 
         for component in components {
             let trimmed = component.trimmingCharacters(in: .whitespaces)
-            if trimmed.starts(with: "Credential=") {
+            if trimmed.contains("Credential=") {
                 credentialPart = trimmed
-            } else if trimmed.starts(with: "SignedHeaders=") {
+            } else if trimmed.contains("SignedHeaders=") {
                 signedHeadersPart = trimmed
-            } else if trimmed.starts(with: "Signature=") {
+            } else if trimmed.contains("Signature=") {
                 signaturePart = trimmed
             }
         }

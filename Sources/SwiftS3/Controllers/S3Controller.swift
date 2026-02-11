@@ -1,10 +1,12 @@
 import Foundation
 import HTTPTypes
 import Hummingbird
+import Logging
 import NIO
 
 struct S3Controller {
     let storage: any StorageBackend
+    let logger = Logger(label: "SwiftS3.S3")
 
     func addRoutes<Context: RequestContext>(to router: some Router<Context>) {
         // List Buckets (Service)
@@ -87,6 +89,7 @@ struct S3Controller {
     {
         let bucket = try context.parameters.require("bucket")
         try await storage.createBucket(name: bucket)
+        logger.info("Bucket created", metadata: ["bucket": "\(bucket)"])
         return Response(status: .ok)
     }
 
@@ -95,6 +98,7 @@ struct S3Controller {
     {
         let bucket = try context.parameters.require("bucket")
         try await storage.deleteBucket(name: bucket)
+        logger.info("Bucket deleted", metadata: ["bucket": "\(bucket)"])
         return Response(status: .noContent)
     }
 
@@ -204,6 +208,27 @@ struct S3Controller {
         let etag = try await storage.putObject(
             bucket: bucket, key: key, data: request.body, size: contentLength, metadata: metadata)
 
+        // Verify payload checksum if provided
+        if let declaredHash = request.headers[HTTPField.Name("x-amz-content-sha256")!],
+            declaredHash != "UNSIGNED-PAYLOAD",
+            declaredHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+        {
+            if etag != declaredHash {
+                // Delete the object since verification failed
+                try? await storage.deleteObject(bucket: bucket, key: key)
+                logger.warning(
+                    "Payload checksum mismatch",
+                    metadata: [
+                        "bucket": "\(bucket)", "key": "\(key)",
+                        "declared": "\(declaredHash)", "computed": "\(etag)",
+                    ])
+                throw S3Error.xAmzContentSHA256Mismatch
+            }
+        }
+
+        logger.info(
+            "Object uploaded",
+            metadata: ["bucket": "\(bucket)", "key": "\(key)", "etag": "\(etag)"])
         return Response(status: .ok, headers: [.eTag: etag])
     }
 
@@ -384,6 +409,7 @@ struct S3Controller {
         }
 
         try await storage.deleteObject(bucket: bucket, key: key)
+        logger.info("Object deleted", metadata: ["bucket": "\(bucket)", "key": "\(key)"])
         return Response(status: .noContent)
     }
 

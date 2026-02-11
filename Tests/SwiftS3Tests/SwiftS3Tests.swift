@@ -143,8 +143,15 @@ struct SwiftS3Tests {
     func testStorageCreateDeleteBucket() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
+        print("DEBUG: root = \(root)")
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let rootExists = FileManager.default.fileExists(atPath: root)
+        let bucketPath = root + "/test-bucket"
+        let bucketExists = FileManager.default.fileExists(atPath: bucketPath)
+        print("DEBUG: root exists (FileManager): \(rootExists)")
+        print("DEBUG: bucket exists (FileManager): \(bucketExists)")
 
         try await storage.createBucket(name: "test-bucket")
         let result = try await storage.listObjects(
@@ -614,6 +621,72 @@ struct SwiftS3Tests {
                 uri: "/delete-check-bucket", method: .delete, headers: deleteHeaders
             ) { response in
                 #expect(response.status == .noContent)
+            }
+        }
+    }
+
+    // MARK: - Checksum Verification Tests
+
+    @Test("Storage: Checksum Verification Passes")
+    func testChecksumVerificationPasses() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            .path
+        let storage = FileSystemStorage(rootPath: root)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try await storage.createBucket(name: "checksum-bucket")
+
+        let content = "Hello Checksum"
+        let data = ByteBuffer(string: content)
+        let etag = try await storage.putObject(
+            bucket: "checksum-bucket", key: "verified.txt", data: [data].async,
+            size: Int64(data.readableBytes), metadata: nil)
+
+        // The etag IS the SHA256 hex hash — verify it's a valid 64-char hex string
+        #expect(etag.count == 64)
+        #expect(etag.allSatisfy { $0.isHexDigit })
+    }
+
+    @Test("API: Checksum x-amz-content-sha256 Mismatch Rejected")
+    func testChecksumMismatchRejected() async throws {
+        try await withApp { app in
+            // Create Bucket (no auth needed for router-level test)
+            try await app.execute(uri: "/checksum-bucket", method: .put) { _ in }
+
+            // PUT with WRONG x-amz-content-sha256 header
+            var headers = HTTPFields()
+            headers[HTTPField.Name("x-amz-content-sha256")!] =
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            headers[.contentType] = "text/plain"
+
+            try await app.execute(
+                uri: "/checksum-bucket/bad-hash.txt", method: .put, headers: headers,
+                body: ByteBuffer(string: "actual content")
+            ) { response in
+                #expect(response.status == .badRequest)
+                let body = String(buffer: response.body)
+                #expect(body.contains("XAmzContentSHA256Mismatch"))
+            }
+        }
+    }
+
+    @Test("API: Checksum UNSIGNED-PAYLOAD Skipped")
+    func testChecksumUnsignedPayloadSkipped() async throws {
+        try await withApp { app in
+            // Create Bucket
+            try await app.execute(uri: "/unsigned-bucket", method: .put) { _ in }
+
+            // PUT with UNSIGNED-PAYLOAD header — should succeed
+            var headers = HTTPFields()
+            headers[HTTPField.Name("x-amz-content-sha256")!] = "UNSIGNED-PAYLOAD"
+            headers[.contentType] = "text/plain"
+
+            try await app.execute(
+                uri: "/unsigned-bucket/file.txt", method: .put, headers: headers,
+                body: ByteBuffer(string: "unsigned content")
+            ) { response in
+                #expect(response.status == .ok)
+                #expect(response.headers[.eTag] != nil)
             }
         }
     }

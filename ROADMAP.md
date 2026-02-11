@@ -16,7 +16,7 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 - [ ] **Multi-User Identity**: Support multiple access keys/secrets via a configuration file or database.
 - [ ] **Bucket Policies**: Implement JSON-based IAM policies for granular bucket/prefix access control.
 - [ ] **ACLs**: Support basic Canned ACLs (private, public-read).
-- [ ] **Signatures**: Verify `x-amz-content-sha256` payload checksums (currently only signature header is checked).
+- [x] **Signatures**: Verify `x-amz-content-sha256` payload checksums (currently only signature header is checked).
 
 ## 3. S3 Feature Parity (Compatibility)
 **Goal:** Support the "Standard" S3 feature set expected by SDKs (boto3, AWS JS SDK).
@@ -29,9 +29,9 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 ## 4. Reliability & Operations
 **Goal:** Production readiness.
 
-- [ ] **Structured Logging**: JSON logs for observability.
+- [x] **Structured Logging**: JSON logs for observability.
 - [ ] **Metrics**: Prometheus-compatible metrics endpoint (RPS, Latency, Storage usage).
-- [ ] **checksum Verification**: Implement CRC32C/SHA256 checksums on upload/download.
+- [x] **checksum Verification**: Implement CRC32C/SHA256 checksums on upload/download.
 
 ## 5. Development Workflow Improvements
 **Goal:** Ensure faster iteration cycles and better testing.

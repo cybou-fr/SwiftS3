@@ -59,13 +59,14 @@ struct AWSAuthHelper {
             hostHeader += ":\(port)"
         }
 
-        canonicalHeaders += "host:\(hostHeader)\n"
-        canonicalHeaders += "x-amz-date:\(amzDate)\n"
-        signedHeaders = "host;x-amz-date"
-
-        // Payload Hash
+        // Payload Hash (compute first, needed for canonical headers)
         let payloadData = Data(payload.utf8)
         let payloadHash = SHA256.hash(data: payloadData).map { String(format: "%02x", $0) }.joined()
+
+        canonicalHeaders += "host:\(hostHeader)\n"
+        canonicalHeaders += "x-amz-content-sha256:\(payloadHash)\n"
+        canonicalHeaders += "x-amz-date:\(amzDate)\n"
+        signedHeaders = "host;x-amz-content-sha256;x-amz-date"
 
         // Canonical Request
         // Query must be sorted. URL.query doesn't guarantee this but for simple tests we manage it.

@@ -58,6 +58,15 @@ struct S3Error: Error {
         statusCode: .forbidden)
     static let accessDenied = S3Error(
         code: "AccessDenied", message: "Access Denied", statusCode: .forbidden)
+    static let badDigest = S3Error(
+        code: "BadDigest",
+        message:
+            "The Content-MD5 or checksum value that you specified did not match what the server received.",
+        statusCode: .badRequest)
+    static let xAmzContentSHA256Mismatch = S3Error(
+        code: "XAmzContentSHA256Mismatch",
+        message: "The provided 'x-amz-content-sha256' header does not match what was computed.",
+        statusCode: .badRequest)
 }
 
 extension S3Error: ResponseGenerator {

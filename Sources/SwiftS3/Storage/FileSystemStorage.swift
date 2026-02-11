@@ -8,11 +8,14 @@ import _NIOFileSystem
 extension FileSystem {
     func exists(at path: FilePath) async throws -> Bool {
         do {
-            _ = try await self.info(forFileAt: path, infoAboutSymbolicLink: false)
+            let info = try await self.info(forFileAt: path, infoAboutSymbolicLink: false)
+            print("DEBUG exists: path=\(path), info=\(String(describing: info))")
             return true
         } catch let error as FileSystemError where error.code == .notFound {
+            print("DEBUG exists: path=\(path), not found")
             return false
         } catch {
+            print("DEBUG exists: path=\(path), other error: \(error)")
             throw error
         }
     }
@@ -39,37 +42,46 @@ actor FileSystemStorage: StorageBackend {
     func listBuckets() async throws -> [(name: String, created: Date)] {
         // Create root if not exists
         if !(try await fileSystem.exists(at: rootPath)) {
-            try await fileSystem.createDirectory(at: rootPath, withIntermediateDirectories: true, permissions: nil)
+            try await fileSystem.createDirectory(
+                at: rootPath, withIntermediateDirectories: true, permissions: nil)
         }
-        
+
         var buckets: [(name: String, created: Date)] = []
         let handle = try await fileSystem.openDirectory(atPath: rootPath)
         do {
-             for try await entry in handle.listContents() {
-                 if entry.type == .directory {
-                     // DirectoryEntry doesn't have info(), fetching from FS
-                     if let attributes = try await fileSystem.info(forFileAt: entry.path, infoAboutSymbolicLink: false) {
-                         // Use modification time as creation time (since birthtime is not portably available in FileInfo)
-                         let mtime = attributes.lastDataModificationTime
-                         let created = Date(timeIntervalSince1970: TimeInterval(mtime.seconds) + TimeInterval(mtime.nanoseconds) / 1_000_000_000)
-                         buckets.append((name: entry.name.string, created: created))
-                     }
-                 }
-             }
-             try await handle.close()
+            for try await entry in handle.listContents() {
+                if entry.type == .directory {
+                    // DirectoryEntry doesn't have info(), fetching from FS
+                    if let attributes = try await fileSystem.info(
+                        forFileAt: entry.path, infoAboutSymbolicLink: false)
+                    {
+                        // Use modification time as creation time (since birthtime is not portably available in FileInfo)
+                        let mtime = attributes.lastDataModificationTime
+                        let created = Date(
+                            timeIntervalSince1970: TimeInterval(mtime.seconds) + TimeInterval(
+                                mtime.nanoseconds) / 1_000_000_000)
+                        buckets.append((name: entry.name.string, created: created))
+                    }
+                }
+            }
+            try await handle.close()
         } catch {
-             try? await handle.close()
-             throw error
+            try? await handle.close()
+            throw error
         }
         return buckets
     }
 
     func createBucket(name: String) async throws {
         let path = bucketPath(name)
-        if try await fileSystem.exists(at: path) {
+        print("DEBUG createBucket: path=\(path), rootPath=\(rootPath)")
+        let doesExist = try await fileSystem.exists(at: path)
+        print("DEBUG createBucket: exists=\(doesExist)")
+        if doesExist {
             throw S3Error.bucketAlreadyExists
         }
-        try await fileSystem.createDirectory(at: path, withIntermediateDirectories: true, permissions: nil)
+        try await fileSystem.createDirectory(
+            at: path, withIntermediateDirectories: true, permissions: nil)
     }
 
     func deleteBucket(name: String) async throws {
@@ -77,7 +89,7 @@ actor FileSystemStorage: StorageBackend {
         if !(try await fileSystem.exists(at: path)) {
             throw S3Error.noSuchBucket
         }
-        
+
         // Check if empty
         let handle = try await fileSystem.openDirectory(atPath: path)
         let isEmpty: Bool
@@ -89,12 +101,13 @@ actor FileSystemStorage: StorageBackend {
             try? await handle.close()
             throw error
         }
-        
+
         if !isEmpty {
             throw S3Error.bucketNotEmpty
         }
         // recursive: false because we checked it's empty, but API requires arg
-        _ = try? await fileSystem.removeItem(at: path, strategy: .platformDefault, recursively: false) 
+        _ = try? await fileSystem.removeItem(
+            at: path, strategy: .platformDefault, recursively: false)
     }
 
     func headBucket(name: String) async throws {
@@ -106,9 +119,9 @@ actor FileSystemStorage: StorageBackend {
         } catch {
             throw S3Error.noSuchBucket
         }
-        
+
         if !isDir {
-             throw S3Error.noSuchBucket
+            throw S3Error.noSuchBucket
         }
     }
 
@@ -122,17 +135,18 @@ actor FileSystemStorage: StorageBackend {
         }
 
         let path = getObjectPath(bucket: bucket, key: key)
-        
+
         // Ensure parent dir exists
-        try await fileSystem.createDirectory(at: path.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
+        try await fileSystem.createDirectory(
+            at: path.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
 
         // Write Metadata
         if let metadata = metadata {
             let meta = ObjectMetadata(
-                key: key, 
-                size: 0, 
-                lastModified: Date(), 
-                eTag: nil, 
+                key: key,
+                size: 0,
+                lastModified: Date(),
+                eTag: nil,
                 contentType: metadata["Content-Type"],
                 customMetadata: metadata
             )
@@ -141,8 +155,9 @@ actor FileSystemStorage: StorageBackend {
 
         // Write file
         var digest = SHA256()
-        let handle = try await fileSystem.openFile(forWritingAt: path, options: .newFile(replaceExisting: true))
-        
+        let handle = try await fileSystem.openFile(
+            forWritingAt: path, options: .newFile(replaceExisting: true))
+
         do {
             var offset: Int64 = 0
             for try await var buffer in data {
@@ -164,44 +179,45 @@ actor FileSystemStorage: StorageBackend {
         metadata: ObjectMetadata, body: AsyncStream<ByteBuffer>?
     ) {
         let path = getObjectPath(bucket: bucket, key: key)
-        
+
         do {
             _ = try await fileSystem.info(forFileAt: path, infoAboutSymbolicLink: false)
         } catch {
-             throw S3Error.noSuchKey
+            throw S3Error.noSuchKey
         }
 
         let metadata = try await getObjectMetadata(bucket: bucket, key: key)
 
         let handle = try await fileSystem.openFile(forReadingAt: path)
-        
+
         let body = AsyncStream<ByteBuffer> { continuation in
             _ = Task {
                 do {
                     let info = try await handle.info()
                     let fileSize = Int64(info.size)
-                    
+
                     var currentOffset: Int64 = 0
                     var endOffset: Int64 = fileSize - 1
-                    
+
                     if let range = range {
                         currentOffset = range.start
                         endOffset = range.end
                     }
-                    
+
                     // Cap endOffset
                     if endOffset >= fileSize {
                         endOffset = fileSize - 1
                     }
-                    
+
                     while currentOffset <= endOffset {
                         let remaining = endOffset - currentOffset + 1
                         let chunkSize = min(remaining, 64 * 1024)
-                        
+
                         // readChunk returns ByteBuffer
-                        let buffer = try await handle.readChunk(fromAbsoluteOffset: currentOffset, length: .bytes(Int64(chunkSize)))
+                        let buffer = try await handle.readChunk(
+                            fromAbsoluteOffset: currentOffset, length: .bytes(Int64(chunkSize)))
                         if buffer.readableBytes == 0 { break }
-                        
+
                         continuation.yield(buffer)
                         currentOffset += Int64(buffer.readableBytes)
                     }
@@ -219,7 +235,8 @@ actor FileSystemStorage: StorageBackend {
 
     func deleteObject(bucket: String, key: String) async throws {
         let path = getObjectPath(bucket: bucket, key: key)
-        _ = try? await fileSystem.removeItem(at: path, strategy: .platformDefault, recursively: false)
+        _ = try? await fileSystem.removeItem(
+            at: path, strategy: .platformDefault, recursively: false)
         try await metadataStore.deleteMetadata(bucket: bucket, key: key)
     }
 
@@ -239,44 +256,48 @@ actor FileSystemStorage: StorageBackend {
         let dstPath = getObjectPath(bucket: toBucket, key: toKey)
 
         if !(try await fileSystem.exists(at: srcPath)) {
-             throw S3Error.noSuchKey
+            throw S3Error.noSuchKey
         }
-        
+
         let dstBucketPath = bucketPath(toBucket)
         if !(try await fileSystem.exists(at: dstBucketPath)) {
             throw S3Error.noSuchBucket
         }
 
         // Ensure dst dir
-        try await fileSystem.createDirectory(at: dstPath.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
+        try await fileSystem.createDirectory(
+            at: dstPath.removingLastComponent(), withIntermediateDirectories: true, permissions: nil
+        )
 
         // Manual Copy
         let srcHandle = try await fileSystem.openFile(forReadingAt: srcPath)
         do {
-             let dstHandle = try await fileSystem.openFile(forWritingAt: dstPath, options: .newFile(replaceExisting: true))
-             do {
-                 let size = Int64(try await srcHandle.info().size)
-                 var offset: Int64 = 0
-                 while offset < size {
-                     let chunk = try await srcHandle.readChunk(fromAbsoluteOffset: offset, length: .bytes(64*1024))
-                     if chunk.readableBytes == 0 { break }
-                     try await dstHandle.write(contentsOf: chunk, toAbsoluteOffset: offset)
-                     offset += Int64(chunk.readableBytes)
-                 }
-                 try await dstHandle.close()
-             } catch {
-                 try? await dstHandle.close()
-                 throw error
-             }
-             try await srcHandle.close()
+            let dstHandle = try await fileSystem.openFile(
+                forWritingAt: dstPath, options: .newFile(replaceExisting: true))
+            do {
+                let size = Int64(try await srcHandle.info().size)
+                var offset: Int64 = 0
+                while offset < size {
+                    let chunk = try await srcHandle.readChunk(
+                        fromAbsoluteOffset: offset, length: .bytes(64 * 1024))
+                    if chunk.readableBytes == 0 { break }
+                    try await dstHandle.write(contentsOf: chunk, toAbsoluteOffset: offset)
+                    offset += Int64(chunk.readableBytes)
+                }
+                try await dstHandle.close()
+            } catch {
+                try? await dstHandle.close()
+                throw error
+            }
+            try await srcHandle.close()
         } catch {
-             try? await srcHandle.close()
-             throw error
+            try? await srcHandle.close()
+            throw error
         }
-        
+
         // Copy Metadata
         if let srcMeta = try? await metadataStore.getMetadata(bucket: fromBucket, key: fromKey) {
-             try await metadataStore.saveMetadata(bucket: toBucket, key: toKey, metadata: srcMeta)
+            try await metadataStore.saveMetadata(bucket: toBucket, key: toKey, metadata: srcMeta)
         }
 
         return try await getObjectMetadata(bucket: toBucket, key: toKey)
@@ -313,14 +334,17 @@ actor FileSystemStorage: StorageBackend {
         let uploadId = UUID().uuidString
         let path = uploadPath(bucket: bucket, uploadId: uploadId)
 
-        try await fileSystem.createDirectory(at: path, withIntermediateDirectories: true, permissions: nil)
+        try await fileSystem.createDirectory(
+            at: path, withIntermediateDirectories: true, permissions: nil)
 
         let info = UploadInfo(key: key, metadata: metadata)
         let data = try JSONEncoder().encode(info)
-        
+
         // Write info.json
-        _ = try await fileSystem.withFileHandle(forWritingAt: path.appending("info.json"), options: .newFile(replaceExisting: true)) { handle in
-             try await handle.write(contentsOf: data.map { $0 }, toAbsoluteOffset: 0)
+        _ = try await fileSystem.withFileHandle(
+            forWritingAt: path.appending("info.json"), options: .newFile(replaceExisting: true)
+        ) { handle in
+            try await handle.write(contentsOf: data.map { $0 }, toAbsoluteOffset: 0)
         }
 
         return uploadId
@@ -336,10 +360,11 @@ actor FileSystemStorage: StorageBackend {
         }
 
         let partPath = uPath.appending("\(partNumber)")
-        
+
         var digest = SHA256()
-        let handle = try await fileSystem.openFile(forWritingAt: partPath, options: .newFile(replaceExisting: true))
-        
+        let handle = try await fileSystem.openFile(
+            forWritingAt: partPath, options: .newFile(replaceExisting: true))
+
         do {
             var offset: Int64 = 0
             for try await var buffer in data {
@@ -362,14 +387,17 @@ actor FileSystemStorage: StorageBackend {
     ) async throws -> String {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
         if !(try await fileSystem.exists(at: uPath)) {
-             throw S3Error.noSuchUpload
+            throw S3Error.noSuchUpload
         }
 
         // Read Info
-        let infoDataBuffer = try await fileSystem.withFileHandle(forReadingAt: uPath.appending("info.json")) { handle in
+        let infoDataBuffer = try await fileSystem.withFileHandle(
+            forReadingAt: uPath.appending("info.json")
+        ) { handle in
             // Read all
             let info = try await handle.info()
-            return try await handle.readChunk(fromAbsoluteOffset: 0, length: .bytes(Int64(info.size)))
+            return try await handle.readChunk(
+                fromAbsoluteOffset: 0, length: .bytes(Int64(info.size)))
         }
         let infoData = Data(buffer: infoDataBuffer)
         let info = try JSONDecoder().decode(UploadInfo.self, from: infoData)
@@ -379,18 +407,21 @@ actor FileSystemStorage: StorageBackend {
         }
 
         let finalPath = getObjectPath(bucket: bucket, key: key)
-        
+
         // Ensure parent dir exists
-        try await fileSystem.createDirectory(at: finalPath.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
+        try await fileSystem.createDirectory(
+            at: finalPath.removingLastComponent(), withIntermediateDirectories: true,
+            permissions: nil)
 
         var fullDigest = SHA256()
-        
+
         // Combine parts
-        let outHandle = try await fileSystem.openFile(forWritingAt: finalPath, options: .newFile(replaceExisting: true))
-        
+        let outHandle = try await fileSystem.openFile(
+            forWritingAt: finalPath, options: .newFile(replaceExisting: true))
+
         do {
             var outOffset: Int64 = 0
-            
+
             for part in parts {
                 let partPath = uPath.appending("\(part.partNumber)")
                 guard try await fileSystem.exists(at: partPath) else {
@@ -403,13 +434,15 @@ actor FileSystemStorage: StorageBackend {
                     var inOffset: Int64 = 0
                     while inOffset < size {
                         let chunkName = 64 * 1024
-                        let chunk = try await inHandle.readChunk(fromAbsoluteOffset: inOffset, length: .bytes(Int64(min(Int64(chunkName), size - inOffset))))
+                        let chunk = try await inHandle.readChunk(
+                            fromAbsoluteOffset: inOffset,
+                            length: .bytes(Int64(min(Int64(chunkName), size - inOffset))))
                         if chunk.readableBytes == 0 { break }
                         try await outHandle.write(contentsOf: chunk, toAbsoluteOffset: outOffset)
-                        
+
                         // Update digest
                         fullDigest.update(data: Data(chunk.readableBytesView))
-                        
+
                         inOffset += Int64(chunk.readableBytes)
                         outOffset += Int64(chunk.readableBytes)
                     }
@@ -430,7 +463,7 @@ actor FileSystemStorage: StorageBackend {
 
         // Write Metadata
         if let metadata = info.metadata {
-             let meta = ObjectMetadata(
+            let meta = ObjectMetadata(
                 key: key,
                 size: 0,
                 lastModified: Date(),
@@ -442,13 +475,15 @@ actor FileSystemStorage: StorageBackend {
         }
 
         // Cleanup
-        _ = try? await fileSystem.removeItem(at: uPath, strategy: .platformDefault, recursively: true)
+        _ = try? await fileSystem.removeItem(
+            at: uPath, strategy: .platformDefault, recursively: true)
 
         return finalETag
     }
 
     func abortMultipartUpload(bucket: String, key: String, uploadId: String) async throws {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
-        _ = try? await fileSystem.removeItem(at: uPath, strategy: .platformDefault, recursively: true)
+        _ = try? await fileSystem.removeItem(
+            at: uPath, strategy: .platformDefault, recursively: true)
     }
 }
