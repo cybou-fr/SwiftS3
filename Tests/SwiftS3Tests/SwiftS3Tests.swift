@@ -167,7 +167,7 @@ struct SwiftS3Tests {
         try await storage.createBucket(name: "test-bucket")
 
         let data = Data("Hello, World!".utf8)
-        let buffer = ByteBuffer(data: data)
+        let buffer = ByteBuffer(bytes: data)
         let stream = AsyncStream<ByteBuffer> { continuation in
             continuation.yield(buffer)
             continuation.finish()

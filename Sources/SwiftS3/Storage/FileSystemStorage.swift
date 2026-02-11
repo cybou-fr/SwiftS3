@@ -6,9 +6,11 @@ import NIO
 actor FileSystemStorage: StorageBackend {
     let rootPath: String
     let fileManager = FileManager.default
+    let metadataStore: MetadataStore
 
     init(rootPath: String) {
         self.rootPath = rootPath
+        self.metadataStore = FileSystemMetadataStore(rootPath: rootPath)
     }
 
     private func bucketPath(_ name: String) -> String {
@@ -82,10 +84,30 @@ actor FileSystemStorage: StorageBackend {
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
         // Write Metadata
+        // Write Metadata
         if let metadata = metadata {
-            let metaPath = path + ".metadata"
-            let metaData = try JSONEncoder().encode(metadata)
-            try metaData.write(to: URL(fileURLWithPath: metaPath))
+            // We need a dummy ObjectMetadata to save, but wait, putObject only receives [String:String] metadata map.
+            // We don't know size/date fully yet? 
+            // Actually, for FileSystemMetadataStore, we separate file attributes (from FS) and custom metadata (from JSON).
+            // saveMetadata takes ObjectMetadata.
+            // But here we only have the dictionary.
+            // We should reconstruct the ObjectMetadata object.
+            // However, the file hasn't been written yet (size is unknown/partial?).
+            // The current FileSystemStorage wrote metadata *before* content.
+            // But generic MetadataStore might want to store size/etc.
+            // Let's check MetadataStore.saveMetadata implementation. It writes the JSON map.
+            // It ignores size/date for saving (it assumes FS handles it, or it doesn't store them in JSON).
+            // The implementation I wrote for FileSystemMetadataStore.saveMetadata ONLY writes the JSON from customMetadata.
+            // So it's safe to pass a partial ObjectMetadata.
+            let meta = ObjectMetadata(
+                key: key, 
+                size: 0, 
+                lastModified: Date(), 
+                eTag: nil, 
+                contentType: metadata["Content-Type"],
+                customMetadata: metadata
+            )
+            try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
         }
 
         // Create file
@@ -160,10 +182,7 @@ actor FileSystemStorage: StorageBackend {
         if fileManager.fileExists(atPath: path) {
             try fileManager.removeItem(atPath: path)
         }
-        let metaPath = path + ".metadata"
-        if fileManager.fileExists(atPath: metaPath) {
-            try? fileManager.removeItem(atPath: metaPath)
-        }
+        try await metadataStore.deleteMetadata(bucket: bucket, key: key)
     }
 
     func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
@@ -209,9 +228,10 @@ actor FileSystemStorage: StorageBackend {
         try fileManager.copyItem(atPath: srcPath, toPath: dstPath)
 
         // Copy Metadata
-        let srcMetaPath = srcPath + ".metadata"
-        if fileManager.fileExists(atPath: srcMetaPath) {
-            try fileManager.copyItem(atPath: srcMetaPath, toPath: dstMetaPath)
+        // We read from source using Store and write to dest using Store
+        // Note: This loses the atomic "fs copy" of the metadata file, but is correct for abstraction.
+        if let srcMeta = try? await metadataStore.getMetadata(bucket: fromBucket, key: fromKey) {
+             try await metadataStore.saveMetadata(bucket: toBucket, key: toKey, metadata: srcMeta)
         }
 
         // Return new metadata
@@ -222,153 +242,13 @@ actor FileSystemStorage: StorageBackend {
         bucket: String, prefix: String?, delimiter: String?, marker: String?,
         continuationToken: String?, maxKeys: Int?
     ) async throws -> ListObjectsResult {
-        let bPath = bucketPath(bucket)
-        if !fileManager.fileExists(atPath: bPath) {
-            throw S3Error.noSuchBucket
-        }
-
-        let bucketURL = URL(fileURLWithPath: bPath).standardizedFileURL
-        let bucketPathString = bucketURL.path
-
-        let enumerator = fileManager.enumerator(
-            at: bucketURL, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles])
-
-        var allObjects: [ObjectMetadata] = []
-
-        while let url = enumerator?.nextObject() as? URL {
-            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != true else {
-                continue
-            }
-
-            let standardURL = url.standardizedFileURL
-            let fullPath = standardURL.path
-
-            guard fullPath.hasPrefix(bucketPathString) else {
-                continue
-            }
-
-            var relativeKey = String(fullPath.dropFirst(bucketPathString.count))
-            if relativeKey.hasPrefix("/") {
-                relativeKey.removeFirst()
-            }
-
-            // Filter by Prefix
-            if let prefix = prefix, !relativeKey.hasPrefix(prefix) {
-                continue
-            }
-
-            // Ignore internal metadata files
-            if relativeKey.hasSuffix(".metadata") || relativeKey.contains("/.uploads/") {
-                continue
-            }
-
-            // Filter by Marker (V1) or ContinuationToken (V2)
-            // For V2, startAfter is also key, but continuationToken is usually an opaque token (often base64 of key).
-            // For simple implementation, we assume continuationToken IS the key to start after.
-            let startAfter = continuationToken ?? marker
-            if let startAfter = startAfter, relativeKey <= startAfter {
-                continue
-            }
-
-            let values = try url.resourceValues(forKeys: [
-                .fileSizeKey, .contentModificationDateKey,
-            ])
-
-            allObjects.append(
-                ObjectMetadata(
-                    key: relativeKey,
-                    size: Int64(values.fileSize ?? 0),
-                    lastModified: values.contentModificationDate ?? Date(),
-                    eTag: nil
-                ))
-        }
-
-        // Sort by Key
-        allObjects.sort { $0.key < $1.key }
-
-        // Apply Delimiter (Grouping)
-        var objects: [ObjectMetadata] = []
-        var commonPrefixes: Set<String> = []
-        var truncated = false
-        var nextMarker: String? = nil
-        var nextContinuationToken: String? = nil
-
-        let limit = maxKeys ?? 1000
-        var count = 0
-
-        // We need to keep track of the last seen "rolled up" prefix to avoid duplicates in the run
-        var lastPrefix: String? = nil
-
-        for obj in allObjects {
-            if count >= limit {
-                truncated = true
-                nextMarker = objects.last?.key
-                nextContinuationToken = objects.last?.key  // Use key as token for now
-                break
-            }
-
-            let key = obj.key
-            var isCommonPrefix = false
-            var currentPrefix = ""
-
-            if let delimiter = delimiter {
-                let prefixLen = prefix?.count ?? 0
-                let searchRange = key.index(key.startIndex, offsetBy: prefixLen)..<key.endIndex
-
-                if let range = key.range(of: delimiter, range: searchRange) {
-                    currentPrefix = String(key[..<range.upperBound])
-                    isCommonPrefix = true
-                }
-            }
-
-            if isCommonPrefix {
-                if currentPrefix != lastPrefix {
-                    commonPrefixes.insert(currentPrefix)
-                    lastPrefix = currentPrefix
-                    count += 1
-                }
-            } else {
-                objects.append(obj)
-                count += 1
-            }
-        }
-
-        return ListObjectsResult(
-            objects: objects,
-            commonPrefixes: Array(commonPrefixes).sorted(),
-            isTruncated: truncated,
-            nextMarker: nextMarker,
-            nextContinuationToken: nextContinuationToken
-        )
+        return try await metadataStore.listObjects(
+            bucket: bucket, prefix: prefix, delimiter: delimiter, marker: marker,
+            continuationToken: continuationToken, maxKeys: maxKeys)
     }
 
     func getObjectMetadata(bucket: String, key: String) async throws -> ObjectMetadata {
-        let path = getObjectPath(bucket: bucket, key: key)
-        guard fileManager.fileExists(atPath: path) else {
-            throw S3Error.noSuchKey
-        }
-
-        let attr = try fileManager.attributesOfItem(atPath: path)
-        let size = attr[.size] as? Int64 ?? 0
-        let date = attr[.modificationDate] as? Date ?? Date()
-
-        // Read Metadata
-        var customMetadata: [String: String] = [:]
-        var contentType: String? = nil
-
-        let metaPath = path + ".metadata"
-        if fileManager.fileExists(atPath: metaPath),
-            let data = try? Data(contentsOf: URL(fileURLWithPath: metaPath)),
-            let dict = try? JSONDecoder().decode([String: String].self, from: data)
-        {
-            customMetadata = dict
-            contentType = dict["Content-Type"]
-        }
-
-        return ObjectMetadata(
-            key: key, size: size, lastModified: date, eTag: nil, contentType: contentType,
-            customMetadata: customMetadata)
+        return try await metadataStore.getMetadata(bucket: bucket, key: key)
     }
 
     // MARK: - Multipart Upload
@@ -473,9 +353,17 @@ actor FileSystemStorage: StorageBackend {
                 throw S3Error.invalidPart
             }
 
-            let partData = try Data(contentsOf: URL(fileURLWithPath: partPath))
-            fileHandle.write(partData)
-            fullDigest.update(data: partData)
+            let partURL = URL(fileURLWithPath: partPath)
+            let partHandle = try FileHandle(forReadingFrom: partURL)
+            defer { try? partHandle.close() }
+
+            // Stream copy
+            while true {
+                 let chunk = try partHandle.read(upToCount: 64 * 1024) 
+                 guard let data = chunk, !data.isEmpty else { break }
+                 fileHandle.write(data)
+                 fullDigest.update(data: data)
+            }
         }
 
         let finalETag =
@@ -483,9 +371,15 @@ actor FileSystemStorage: StorageBackend {
 
         // Write Metadata
         if let metadata = info.metadata {
-            let metaPath = finalPath + ".metadata"
-            let metaData = try JSONEncoder().encode(metadata)
-            try metaData.write(to: URL(fileURLWithPath: metaPath))
+             let meta = ObjectMetadata(
+                key: key,
+                size: 0,
+                lastModified: Date(),
+                eTag: finalETag,
+                contentType: metadata["Content-Type"],
+                customMetadata: metadata
+            )
+            try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
         }
 
         // Cleanup

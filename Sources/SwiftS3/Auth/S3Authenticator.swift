@@ -41,13 +41,24 @@ struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
         // Parse Authorization Header
         // Example: AWS4-HMAC-SHA256 Credential=admin/20260210/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=...
 
-        let components = authHeader.split(separator: ",")
-        guard components.count == 3 else { return false }
+        let components = authHeader.split(separator: ",", omittingEmptySubsequences: true)
+        guard components.count >= 3 else { return false }
 
         // Extract values
-        let credentialPart = components[0].trimmingCharacters(in: .whitespaces)
-        let signedHeadersPart = components[1].trimmingCharacters(in: .whitespaces)
-        let signaturePart = components[2].trimmingCharacters(in: .whitespaces)
+        var credentialPart = ""
+        var signedHeadersPart = ""
+        var signaturePart = ""
+
+        for component in components {
+            let trimmed = component.trimmingCharacters(in: .whitespaces)
+            if trimmed.starts(with: "Credential=") {
+                credentialPart = trimmed
+            } else if trimmed.starts(with: "SignedHeaders=") {
+                signedHeadersPart = trimmed
+            } else if trimmed.starts(with: "Signature=") {
+                signaturePart = trimmed
+            }
+        }
 
         guard let credentialRange = credentialPart.range(of: "Credential="),
             let signedHeadersRange = signedHeadersPart.range(of: "SignedHeaders="),

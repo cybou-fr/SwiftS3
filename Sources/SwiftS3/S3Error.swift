@@ -52,6 +52,12 @@ struct S3Error: Error {
         code: "InvalidRequest",
         message: "The request is invalid.",
         statusCode: .badRequest)
+    static let invalidAccessKeyId = S3Error(
+        code: "InvalidAccessKeyId",
+        message: "The AWS Access Key Id you provided does not exist in our records.",
+        statusCode: .forbidden)
+    static let accessDenied = S3Error(
+        code: "AccessDenied", message: "Access Denied", statusCode: .forbidden)
 }
 
 extension S3Error: ResponseGenerator {
