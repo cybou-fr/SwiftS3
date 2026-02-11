@@ -2,103 +2,132 @@ import Crypto
 import Foundation
 import Hummingbird
 import NIO
+import _NIOFileSystem
+
+// Helper extension to match functionality
+extension FileSystem {
+    func exists(at path: FilePath) async throws -> Bool {
+        do {
+            _ = try await self.info(forFileAt: path, infoAboutSymbolicLink: false)
+            return true
+        } catch let error as FileSystemError where error.code == .notFound {
+            return false
+        } catch {
+            throw error
+        }
+    }
+}
 
 actor FileSystemStorage: StorageBackend {
-    let rootPath: String
-    let fileManager = FileManager.default
+    let rootPath: FilePath
+    let fileSystem = FileSystem.shared
     let metadataStore: MetadataStore
 
     init(rootPath: String, metadataStore: MetadataStore? = nil) {
-        self.rootPath = rootPath
+        self.rootPath = FilePath(rootPath)
         self.metadataStore = metadataStore ?? FileSystemMetadataStore(rootPath: rootPath)
     }
 
-    private func bucketPath(_ name: String) -> String {
-        return "\(rootPath)/\(name)"
+    private func bucketPath(_ name: String) -> FilePath {
+        return rootPath.appending(name)
     }
 
-    private func getObjectPath(bucket: String, key: String) -> String {
-        return "\(rootPath)/\(bucket)/\(key)"
+    private func getObjectPath(bucket: String, key: String) -> FilePath {
+        return rootPath.appending(bucket).appending(key)
     }
 
     func listBuckets() async throws -> [(name: String, created: Date)] {
-        let rootURL = URL(fileURLWithPath: rootPath)
         // Create root if not exists
-        if !fileManager.fileExists(atPath: rootPath) {
-            try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        if !(try await fileSystem.exists(at: rootPath)) {
+            try await fileSystem.createDirectory(at: rootPath, withIntermediateDirectories: true, permissions: nil)
         }
-
-        let urls = try fileManager.contentsOfDirectory(
-            at: rootURL, includingPropertiesForKeys: [.creationDateKey], options: [])
-        return try urls.filter {
-            try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+        
+        var buckets: [(name: String, created: Date)] = []
+        let handle = try await fileSystem.openDirectory(atPath: rootPath)
+        do {
+             for try await entry in handle.listContents() {
+                 if entry.type == .directory {
+                     // DirectoryEntry doesn't have info(), fetching from FS
+                     if let attributes = try await fileSystem.info(forFileAt: entry.path, infoAboutSymbolicLink: false) {
+                         // Use modification time as creation time (since birthtime is not portably available in FileInfo)
+                         let mtime = attributes.lastDataModificationTime
+                         let created = Date(timeIntervalSince1970: TimeInterval(mtime.seconds) + TimeInterval(mtime.nanoseconds) / 1_000_000_000)
+                         buckets.append((name: entry.name.string, created: created))
+                     }
+                 }
+             }
+             try await handle.close()
+        } catch {
+             try? await handle.close()
+             throw error
         }
-        .map { url in
-            let values = try url.resourceValues(forKeys: [.creationDateKey])
-            return (name: url.lastPathComponent, created: values.creationDate ?? Date())
-        }
+        return buckets
     }
 
     func createBucket(name: String) async throws {
         let path = bucketPath(name)
-        if fileManager.fileExists(atPath: path) {
+        if try await fileSystem.exists(at: path) {
             throw S3Error.bucketAlreadyExists
         }
-        try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
+        try await fileSystem.createDirectory(at: path, withIntermediateDirectories: true, permissions: nil)
     }
 
     func deleteBucket(name: String) async throws {
         let path = bucketPath(name)
-        if !fileManager.fileExists(atPath: path) {
+        if !(try await fileSystem.exists(at: path)) {
             throw S3Error.noSuchBucket
         }
+        
         // Check if empty
-        let contents = try fileManager.contentsOfDirectory(atPath: path)
-        if !contents.isEmpty {
+        let handle = try await fileSystem.openDirectory(atPath: path)
+        let isEmpty: Bool
+        do {
+            var iterator = handle.listContents().makeAsyncIterator()
+            isEmpty = try await iterator.next() == nil
+            try await handle.close()
+        } catch {
+            try? await handle.close()
+            throw error
+        }
+        
+        if !isEmpty {
             throw S3Error.bucketNotEmpty
         }
-        try fileManager.removeItem(atPath: path)
+        // recursive: false because we checked it's empty, but API requires arg
+        _ = try? await fileSystem.removeItem(at: path, strategy: .platformDefault, recursively: false) 
     }
 
     func headBucket(name: String) async throws {
         let path = bucketPath(name)
-        var isDir: ObjCBool = false
-        if !fileManager.fileExists(atPath: path, isDirectory: &isDir) || !isDir.boolValue {
+        var isDir = false
+        do {
+            let info = try await fileSystem.info(forFileAt: path, infoAboutSymbolicLink: false)
+            isDir = info?.type == .directory
+        } catch {
             throw S3Error.noSuchBucket
+        }
+        
+        if !isDir {
+             throw S3Error.noSuchBucket
         }
     }
 
     func putObject<Stream: AsyncSequence & Sendable>(
-        bucket: String, key: String, data: consuming Stream, size: Int64?,
+        bucket: String, key: String, data: Stream, size: Int64?,
         metadata: [String: String]?
     ) async throws -> String where Stream.Element == ByteBuffer {
         let bPath = bucketPath(bucket)
-        var isDir: ObjCBool = false
-        if !fileManager.fileExists(atPath: bPath, isDirectory: &isDir) || !isDir.boolValue {
+        if !(try await fileSystem.exists(at: bPath)) {
             throw S3Error.noSuchBucket
         }
 
         let path = getObjectPath(bucket: bucket, key: key)
-        let url = URL(fileURLWithPath: path)
-        try fileManager.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        
+        // Ensure parent dir exists
+        try await fileSystem.createDirectory(at: path.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
 
         // Write Metadata
-        // Write Metadata
         if let metadata = metadata {
-            // We need a dummy ObjectMetadata to save, but wait, putObject only receives [String:String] metadata map.
-            // We don't know size/date fully yet? 
-            // Actually, for FileSystemMetadataStore, we separate file attributes (from FS) and custom metadata (from JSON).
-            // saveMetadata takes ObjectMetadata.
-            // But here we only have the dictionary.
-            // We should reconstruct the ObjectMetadata object.
-            // However, the file hasn't been written yet (size is unknown/partial?).
-            // The current FileSystemStorage wrote metadata *before* content.
-            // But generic MetadataStore might want to store size/etc.
-            // Let's check MetadataStore.saveMetadata implementation. It writes the JSON map.
-            // It ignores size/date for saving (it assumes FS handles it, or it doesn't store them in JSON).
-            // The implementation I wrote for FileSystemMetadataStore.saveMetadata ONLY writes the JSON from customMetadata.
-            // So it's safe to pass a partial ObjectMetadata.
             let meta = ObjectMetadata(
                 key: key, 
                 size: 0, 
@@ -110,22 +139,22 @@ actor FileSystemStorage: StorageBackend {
             try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
         }
 
-        // Create file
-        if !fileManager.createFile(atPath: path, contents: nil) {
-            // If it fails, maybe it already exists, checking write permissions?
-            // Actually createFile returns true if successful. If it fails, we might throw.
-        }
-
-        let fileHandle = try FileHandle(forWritingTo: url)
-        defer { try? fileHandle.close() }
-
+        // Write file
         var digest = SHA256()
-
-        for try await var buffer in data {
-            let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
-            let data = Data(bytes)
-            digest.update(data: data)
-            fileHandle.write(data)
+        let handle = try await fileSystem.openFile(forWritingAt: path, options: .newFile(replaceExisting: true))
+        
+        do {
+            var offset: Int64 = 0
+            for try await var buffer in data {
+                let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
+                digest.update(data: Data(bytes))
+                try await handle.write(contentsOf: bytes, toAbsoluteOffset: offset)
+                offset += Int64(bytes.count)
+            }
+            try await handle.close()
+        } catch {
+            try? await handle.close()
+            throw error
         }
 
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
@@ -135,42 +164,53 @@ actor FileSystemStorage: StorageBackend {
         metadata: ObjectMetadata, body: AsyncStream<ByteBuffer>?
     ) {
         let path = getObjectPath(bucket: bucket, key: key)
-        guard fileManager.fileExists(atPath: path) else {
-            throw S3Error.noSuchKey
+        
+        do {
+            _ = try await fileSystem.info(forFileAt: path, infoAboutSymbolicLink: false)
+        } catch {
+             throw S3Error.noSuchKey
         }
 
         let metadata = try await getObjectMetadata(bucket: bucket, key: key)
 
-        // Stream the file using a detached task to avoid blocking the actor
+        let handle = try await fileSystem.openFile(forReadingAt: path)
+        
         let body = AsyncStream<ByteBuffer> { continuation in
-            let fileURL = URL(fileURLWithPath: path)
-            do {
-                let fileHandle = try FileHandle(forReadingFrom: fileURL)
-
-                if let range = range {
-                    try fileHandle.seek(toOffset: UInt64(range.start))
-                    var remaining = range.end - range.start + 1
-
-                    while remaining > 0 {
+            _ = Task {
+                do {
+                    let info = try await handle.info()
+                    let fileSize = Int64(info.size)
+                    
+                    var currentOffset: Int64 = 0
+                    var endOffset: Int64 = fileSize - 1
+                    
+                    if let range = range {
+                        currentOffset = range.start
+                        endOffset = range.end
+                    }
+                    
+                    // Cap endOffset
+                    if endOffset >= fileSize {
+                        endOffset = fileSize - 1
+                    }
+                    
+                    while currentOffset <= endOffset {
+                        let remaining = endOffset - currentOffset + 1
                         let chunkSize = min(remaining, 64 * 1024)
-                        let data = try fileHandle.read(upToCount: Int(chunkSize))
-                        guard let data = data, !data.isEmpty else { break }
-                        continuation.yield(ByteBuffer(bytes: data))
-                        remaining -= Int64(data.count)
+                        
+                        // readChunk returns ByteBuffer
+                        let buffer = try await handle.readChunk(fromAbsoluteOffset: currentOffset, length: .bytes(Int64(chunkSize)))
+                        if buffer.readableBytes == 0 { break }
+                        
+                        continuation.yield(buffer)
+                        currentOffset += Int64(buffer.readableBytes)
                     }
-                } else {
-                    // Read in chunks
-                    while true {
-                        let data = try fileHandle.read(upToCount: 64 * 1024)
-                        guard let data = data, !data.isEmpty else { break }
-                        continuation.yield(ByteBuffer(bytes: data))
-                    }
+                    try await handle.close()
+                    continuation.finish()
+                } catch {
+                    try? await handle.close()
+                    continuation.finish()
                 }
-
-                try? fileHandle.close()
-                continuation.finish()
-            } catch {
-                continuation.finish()
             }
         }
 
@@ -179,9 +219,7 @@ actor FileSystemStorage: StorageBackend {
 
     func deleteObject(bucket: String, key: String) async throws {
         let path = getObjectPath(bucket: bucket, key: key)
-        if fileManager.fileExists(atPath: path) {
-            try fileManager.removeItem(atPath: path)
-        }
+        _ = try? await fileSystem.removeItem(at: path, strategy: .platformDefault, recursively: false)
         try await metadataStore.deleteMetadata(bucket: bucket, key: key)
     }
 
@@ -200,41 +238,47 @@ actor FileSystemStorage: StorageBackend {
         let srcPath = getObjectPath(bucket: fromBucket, key: fromKey)
         let dstPath = getObjectPath(bucket: toBucket, key: toKey)
 
-        guard fileManager.fileExists(atPath: srcPath) else {
-            throw S3Error.noSuchKey
+        if !(try await fileSystem.exists(at: srcPath)) {
+             throw S3Error.noSuchKey
         }
-
-        // Ensure destination bucket exists (implicit check via path generation? No, check bucket existence)
+        
         let dstBucketPath = bucketPath(toBucket)
-        if !fileManager.fileExists(atPath: dstBucketPath) {
+        if !(try await fileSystem.exists(at: dstBucketPath)) {
             throw S3Error.noSuchBucket
         }
 
-        // Ensure destination directory exists
-        let dstURL = URL(fileURLWithPath: dstPath)
-        try fileManager.createDirectory(
-            at: dstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Ensure dst dir
+        try await fileSystem.createDirectory(at: dstPath.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
 
-        // Remove destination if exists (overwrite)
-        if fileManager.fileExists(atPath: dstPath) {
-            try fileManager.removeItem(atPath: dstPath)
+        // Manual Copy
+        let srcHandle = try await fileSystem.openFile(forReadingAt: srcPath)
+        do {
+             let dstHandle = try await fileSystem.openFile(forWritingAt: dstPath, options: .newFile(replaceExisting: true))
+             do {
+                 let size = Int64(try await srcHandle.info().size)
+                 var offset: Int64 = 0
+                 while offset < size {
+                     let chunk = try await srcHandle.readChunk(fromAbsoluteOffset: offset, length: .bytes(64*1024))
+                     if chunk.readableBytes == 0 { break }
+                     try await dstHandle.write(contentsOf: chunk, toAbsoluteOffset: offset)
+                     offset += Int64(chunk.readableBytes)
+                 }
+                 try await dstHandle.close()
+             } catch {
+                 try? await dstHandle.close()
+                 throw error
+             }
+             try await srcHandle.close()
+        } catch {
+             try? await srcHandle.close()
+             throw error
         }
-        let dstMetaPath = dstPath + ".metadata"
-        if fileManager.fileExists(atPath: dstMetaPath) {
-            try? fileManager.removeItem(atPath: dstMetaPath)
-        }
-
-        // Copy File
-        try fileManager.copyItem(atPath: srcPath, toPath: dstPath)
-
+        
         // Copy Metadata
-        // We read from source using Store and write to dest using Store
-        // Note: This loses the atomic "fs copy" of the metadata file, but is correct for abstraction.
         if let srcMeta = try? await metadataStore.getMetadata(bucket: fromBucket, key: fromKey) {
              try await metadataStore.saveMetadata(bucket: toBucket, key: toKey, metadata: srcMeta)
         }
 
-        // Return new metadata
         return try await getObjectMetadata(bucket: toBucket, key: toKey)
     }
 
@@ -253,8 +297,8 @@ actor FileSystemStorage: StorageBackend {
 
     // MARK: - Multipart Upload
 
-    private func uploadPath(bucket: String, uploadId: String) -> String {
-        return bucketPath(bucket) + "/.uploads/" + uploadId
+    private func uploadPath(bucket: String, uploadId: String) -> FilePath {
+        return bucketPath(bucket).appending(".uploads").appending(uploadId)
     }
 
     struct UploadInfo: Codable {
@@ -269,41 +313,45 @@ actor FileSystemStorage: StorageBackend {
         let uploadId = UUID().uuidString
         let path = uploadPath(bucket: bucket, uploadId: uploadId)
 
-        try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
+        try await fileSystem.createDirectory(at: path, withIntermediateDirectories: true, permissions: nil)
 
         let info = UploadInfo(key: key, metadata: metadata)
         let data = try JSONEncoder().encode(info)
-        try data.write(to: URL(fileURLWithPath: path + "/info.json"))
+        
+        // Write info.json
+        _ = try await fileSystem.withFileHandle(forWritingAt: path.appending("info.json"), options: .newFile(replaceExisting: true)) { handle in
+             try await handle.write(contentsOf: data.map { $0 }, toAbsoluteOffset: 0)
+        }
 
         return uploadId
     }
 
     func uploadPart<Stream: AsyncSequence & Sendable>(
-        bucket: String, key: String, uploadId: String, partNumber: Int, data: consuming Stream,
+        bucket: String, key: String, uploadId: String, partNumber: Int, data: Stream,
         size: Int64?
     ) async throws -> String where Stream.Element == ByteBuffer {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
-        if !fileManager.fileExists(atPath: uPath) {
+        if !(try await fileSystem.exists(at: uPath)) {
             throw S3Error.noSuchUpload
         }
 
-        let partPath = uPath + "/\(partNumber)"
-        let fileURL = URL(fileURLWithPath: partPath)
-
-        if !fileManager.createFile(atPath: partPath, contents: nil) {
-            // Handle error
-        }
-
-        let fileHandle = try FileHandle(forWritingTo: fileURL)
-        defer { try? fileHandle.close() }
-
+        let partPath = uPath.appending("\(partNumber)")
+        
         var digest = SHA256()
-
-        for try await var buffer in data {
-            let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
-            let data = Data(bytes)
-            digest.update(data: data)
-            fileHandle.write(data)
+        let handle = try await fileSystem.openFile(forWritingAt: partPath, options: .newFile(replaceExisting: true))
+        
+        do {
+            var offset: Int64 = 0
+            for try await var buffer in data {
+                let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
+                digest.update(data: Data(bytes))
+                try await handle.write(contentsOf: bytes, toAbsoluteOffset: offset)
+                offset += Int64(bytes.count)
+            }
+            try await handle.close()
+        } catch {
+            try? await handle.close()
+            throw error
         }
 
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
@@ -313,57 +361,68 @@ actor FileSystemStorage: StorageBackend {
         bucket: String, key: String, uploadId: String, parts: [PartInfo]
     ) async throws -> String {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
-        if !fileManager.fileExists(atPath: uPath) {
-            throw S3Error.noSuchUpload
+        if !(try await fileSystem.exists(at: uPath)) {
+             throw S3Error.noSuchUpload
         }
 
         // Read Info
-        let infoData = try Data(contentsOf: URL(fileURLWithPath: uPath + "/info.json"))
+        let infoDataBuffer = try await fileSystem.withFileHandle(forReadingAt: uPath.appending("info.json")) { handle in
+            // Read all
+            let info = try await handle.info()
+            return try await handle.readChunk(fromAbsoluteOffset: 0, length: .bytes(Int64(info.size)))
+        }
+        let infoData = Data(buffer: infoDataBuffer)
         let info = try JSONDecoder().decode(UploadInfo.self, from: infoData)
 
         guard info.key == key else {
-            throw S3Error.invalidPart  // Key mismatch
+            throw S3Error.invalidPart
         }
-
-        // Sort parts by number (S3 spec says client provides them sorted, but we should ensure or trust)
-        // We will trust the input list order as per S3 `CompleteMultipartUpload` spec usually requires it,
-        // but verifying existence is good.
 
         let finalPath = getObjectPath(bucket: bucket, key: key)
-        let finalURL = URL(fileURLWithPath: finalPath)
-
+        
         // Ensure parent dir exists
-        try fileManager.createDirectory(
-            at: finalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try await fileSystem.createDirectory(at: finalPath.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
 
-        if !fileManager.createFile(atPath: finalPath, contents: nil) {
+        var fullDigest = SHA256()
+        
+        // Combine parts
+        let outHandle = try await fileSystem.openFile(forWritingAt: finalPath, options: .newFile(replaceExisting: true))
+        
+        do {
+            var outOffset: Int64 = 0
+            
+            for part in parts {
+                let partPath = uPath.appending("\(part.partNumber)")
+                guard try await fileSystem.exists(at: partPath) else {
+                    throw S3Error.invalidPart
+                }
 
-        }
-        let fileHandle = try FileHandle(forWritingTo: finalURL)
-        defer { try? fileHandle.close() }
-
-        var fullDigest = SHA256()  // S3 ETag for multipart is usually -N, but we can compute full hash or just mock it.
-        // For simplicity, we'll return a combined hash or just a unique string.
-        // S3 ETag for multipart: Hex(MD5(Part1) + ... + MD5(PartN)) + "-" + N
-        // We'll mimic this with SHA256 for now or just return a simple UUID/Hash.
-
-        for part in parts {
-            let partPath = uPath + "/\(part.partNumber)"
-            guard fileManager.fileExists(atPath: partPath) else {
-                throw S3Error.invalidPart
+                let inHandle = try await fileSystem.openFile(forReadingAt: partPath)
+                do {
+                    let size = Int64(try await inHandle.info().size)
+                    var inOffset: Int64 = 0
+                    while inOffset < size {
+                        let chunkName = 64 * 1024
+                        let chunk = try await inHandle.readChunk(fromAbsoluteOffset: inOffset, length: .bytes(Int64(min(Int64(chunkName), size - inOffset))))
+                        if chunk.readableBytes == 0 { break }
+                        try await outHandle.write(contentsOf: chunk, toAbsoluteOffset: outOffset)
+                        
+                        // Update digest
+                        fullDigest.update(data: Data(chunk.readableBytesView))
+                        
+                        inOffset += Int64(chunk.readableBytes)
+                        outOffset += Int64(chunk.readableBytes)
+                    }
+                    try await inHandle.close()
+                } catch {
+                    try? await inHandle.close()
+                    throw error
+                }
             }
-
-            let partURL = URL(fileURLWithPath: partPath)
-            let partHandle = try FileHandle(forReadingFrom: partURL)
-            defer { try? partHandle.close() }
-
-            // Stream copy
-            while true {
-                 let chunk = try partHandle.read(upToCount: 64 * 1024) 
-                 guard let data = chunk, !data.isEmpty else { break }
-                 fileHandle.write(data)
-                 fullDigest.update(data: data)
-            }
+            try await outHandle.close()
+        } catch {
+            try? await outHandle.close()
+            throw error
         }
 
         let finalETag =
@@ -383,15 +442,13 @@ actor FileSystemStorage: StorageBackend {
         }
 
         // Cleanup
-        try fileManager.removeItem(atPath: uPath)
+        _ = try? await fileSystem.removeItem(at: uPath, strategy: .platformDefault, recursively: true)
 
         return finalETag
     }
 
     func abortMultipartUpload(bucket: String, key: String, uploadId: String) async throws {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
-        if fileManager.fileExists(atPath: uPath) {
-            try fileManager.removeItem(atPath: uPath)
-        }
+        _ = try? await fileSystem.removeItem(at: uPath, strategy: .platformDefault, recursively: true)
     }
 }

@@ -5,10 +5,10 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 ## 1. Core Architecture Modernization (Performance & Scalability)
 **Goal:** Transition from a simple synchronous file server to a high-performance, non-blocking object engine.
 
-- [ ] **Non-blocking I/O**: Replace `FileManager` (blocking) with `SwiftNIO`'s `NIOFileSystem` or a dedicated IO thread pool to prevent blocking the Swift Concurrency executor.
+- [x] **Non-blocking I/O**: Replace `FileManager` (blocking) with `SwiftNIO`'s `NIOFileSystem` for data path and metadata operations.
 - [x] **Metadata Abstraction**: Refactor storage to use `MetadataStore` protocol.
 - [x] **Metadata Engine**: Implement `SQLMetadataStore` using SQLite to replace sidecar files. This is critical for `ListObjects` performance.
-- [ ] **Streaming Data**: Ensure fully streaming data paths for Uploads (Put) and Downloads (Get) to support large objects with constant memory usage.
+- [x] **Streaming Data**: Fully streaming data paths for Uploads (Put) and Downloads (Get) using `AsyncStream` and `NIOFileSystem`.
 
 ## 2. Security & Identity (IAM)
 **Goal:** Enterprise-grade security and access control.
