@@ -5,7 +5,8 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 ## Features
 
 - **S3 Compatibility**: Supports core S3 API operations giving you a familiar interface.
-- **File System Storage**: Stores objects and buckets directly on the local file system.
+- **SQLite Metadata Store**: Uses a high-performance SQLite engine for managing object metadata, enabling fast listing and filtering.
+- **File System Storage**: Stores object data directly on the local file system.
 - **AWS Signature V4 Auth**: Implements AWS Signature Version 4 authentication for secure requests.
 - **High Performance**: Built with Swift and Hummingbird for valid asynchronous input/output.
 

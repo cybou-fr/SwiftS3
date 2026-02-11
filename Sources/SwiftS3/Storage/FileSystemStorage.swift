@@ -8,9 +8,9 @@ actor FileSystemStorage: StorageBackend {
     let fileManager = FileManager.default
     let metadataStore: MetadataStore
 
-    init(rootPath: String) {
+    init(rootPath: String, metadataStore: MetadataStore? = nil) {
         self.rootPath = rootPath
-        self.metadataStore = FileSystemMetadataStore(rootPath: rootPath)
+        self.metadataStore = metadataStore ?? FileSystemMetadataStore(rootPath: rootPath)
     }
 
     private func bucketPath(_ name: String) -> String {

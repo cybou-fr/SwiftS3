@@ -17,6 +17,8 @@ protocol MetadataStore: Sendable {
         bucket: String, prefix: String?, delimiter: String?, marker: String?,
         continuationToken: String?, maxKeys: Int?
     ) async throws -> ListObjectsResult
+    
+    func shutdown() async throws
 }
 
 /// Default implementation storing metadata in sidecar JSON files
@@ -214,6 +216,10 @@ struct FileSystemMetadataStore: MetadataStore {
             nextMarker: nextMarker,
             nextContinuationToken: nextContinuationToken
         )
+    }
+
+    func shutdown() async throws {
+        // No-op for file system store
     }
 }
 

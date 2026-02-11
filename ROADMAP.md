@@ -7,7 +7,7 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 
 - [ ] **Non-blocking I/O**: Replace `FileManager` (blocking) with `SwiftNIO`'s `NIOFileSystem` or a dedicated IO thread pool to prevent blocking the Swift Concurrency executor.
 - [x] **Metadata Abstraction**: Refactor storage to use `MetadataStore` protocol.
-- [ ] **Metadata Engine**: Implement `SQLMetadataStore` using SQLite to replace sidecar files. This is critical for `ListObjects` performance.
+- [x] **Metadata Engine**: Implement `SQLMetadataStore` using SQLite to replace sidecar files. This is critical for `ListObjects` performance.
 - [ ] **Streaming Data**: Ensure fully streaming data paths for Uploads (Put) and Downloads (Get) to support large objects with constant memory usage.
 
 ## 2. Security & Identity (IAM)
