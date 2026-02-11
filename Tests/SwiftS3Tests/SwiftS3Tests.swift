@@ -143,15 +143,8 @@ struct SwiftS3Tests {
     func testStorageCreateDeleteBucket() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
-        print("DEBUG: root = \(root)")
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
-
-        let rootExists = FileManager.default.fileExists(atPath: root)
-        let bucketPath = root + "/test-bucket"
-        let bucketExists = FileManager.default.fileExists(atPath: bucketPath)
-        print("DEBUG: root exists (FileManager): \(rootExists)")
-        print("DEBUG: bucket exists (FileManager): \(bucketExists)")
 
         try await storage.createBucket(name: "test-bucket")
         let result = try await storage.listObjects(

@@ -67,6 +67,13 @@ struct S3Error: Error {
         code: "XAmzContentSHA256Mismatch",
         message: "The provided 'x-amz-content-sha256' header does not match what was computed.",
         statusCode: .badRequest)
+
+    static let noSuchBucketPolicy = S3Error(
+        code: "NoSuchBucketPolicy", message: "The bucket policy does not exist",
+        statusCode: .notFound)
+
+    static let malformedPolicy = S3Error(
+        code: "MalformedPolicy", message: "Policy has invalid resource", statusCode: .badRequest)
 }
 
 extension S3Error: ResponseGenerator {

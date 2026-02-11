@@ -82,6 +82,11 @@ protocol StorageBackend: Sendable {
     func completeMultipartUpload(bucket: String, key: String, uploadId: String, parts: [PartInfo])
         async throws -> String
     func abortMultipartUpload(bucket: String, key: String, uploadId: String) async throws
+
+    // Bucket Policy
+    func getBucketPolicy(bucket: String) async throws -> BucketPolicy
+    func putBucketPolicy(bucket: String, policy: BucketPolicy) async throws
+    func deleteBucketPolicy(bucket: String) async throws
 }
 
 struct ValidatedRange: Sendable {

@@ -1,0 +1,94 @@
+import Foundation
+
+public enum PolicyDecision: Sendable {
+    case allow
+    case deny
+    case implicitDeny  // No policy matched
+}
+
+public struct PolicyEvaluator: Sendable {
+    public init() {}
+
+    public func evaluate(policy: BucketPolicy, request: PolicyRequest) -> PolicyDecision {
+        // 1. Check for Explicit Deny
+        for statement in policy.Statement {
+            if statement.Effect == .Deny && matches(statement: statement, request: request) {
+                return .deny
+            }
+        }
+
+        // 2. Check for Explicit Allow
+        var isAllowed = false
+        for statement in policy.Statement {
+            if statement.Effect == .Allow && matches(statement: statement, request: request) {
+                isAllowed = true
+            }
+        }
+
+        return isAllowed ? .allow : .implicitDeny
+    }
+
+    private func matches(statement: PolicyStatement, request: PolicyRequest) -> Bool {
+        guard matchesPrincipal(statement.Principal, request.principal) else { return false }
+        guard matchesAction(statement.Action, request.action) else { return false }
+        guard matchesResource(statement.Resource, request.resource) else { return false }
+        return true
+    }
+
+    private func matchesPrincipal(_ policyPrincipal: PolicyPrincipal, _ requestPrincipal: String?)
+        -> Bool
+    {
+        switch policyPrincipal {
+        case .any:
+            return true
+        case .specific(let dict):
+            // Check for "AWS": "arn..." or "AWS": "*"
+            if let aws = dict["AWS"] {
+                if aws == "*" { return true }
+                if let req = requestPrincipal, aws == req { return true }
+                // Also handle short ID matching if needed, but strict string match for now
+            }
+            return false
+        }
+    }
+
+    private func matchesAction(_ policyAction: SingleOrArray<String>, _ requestAction: String)
+        -> Bool
+    {
+        let actions = policyAction.values
+        for action in actions {
+            if action == "*" || action == "s3:*" { return true }
+            if action == requestAction { return true }
+        }
+        return false
+    }
+
+    private func matchesResource(_ policyResource: SingleOrArray<String>, _ requestResource: String)
+        -> Bool
+    {
+        let resources = policyResource.values
+        for resource in resources {
+            if resource == "*" { return true }
+            if resource == requestResource { return true }
+
+            // Simple wildcard matching: "arn:aws:s3:::bucket/*" matches "arn:aws:s3:::bucket/foo"
+            if resource.hasSuffix("*") {
+                let prefix = String(resource.dropLast())
+                if requestResource.hasPrefix(prefix) { return true }
+            }
+        }
+        return false
+    }
+}
+
+public struct PolicyRequest: Sendable {
+    public let principal: String?  // ARN or AccessKey
+    public let action: String  // e.g. "s3:GetObject"
+    public let resource: String  // e.g. "arn:aws:s3:::mybucket/myobject"
+
+    public init(principal: String?, action: String, resource: String) {
+        self.principal = principal
+        self.action = action
+        self.resource = resource
+    }
+}

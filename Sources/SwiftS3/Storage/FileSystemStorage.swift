@@ -7,16 +7,33 @@ import _NIOFileSystem
 // Helper extension to match functionality
 extension FileSystem {
     func exists(at path: FilePath) async throws -> Bool {
-        do {
-            let info = try await self.info(forFileAt: path, infoAboutSymbolicLink: false)
-            print("DEBUG exists: path=\(path), info=\(String(describing: info))")
-            return true
-        } catch let error as FileSystemError where error.code == .notFound {
-            print("DEBUG exists: path=\(path), not found")
-            return false
-        } catch {
-            print("DEBUG exists: path=\(path), other error: \(error)")
-            throw error
+        let info = try await self.info(forFileAt: path, infoAboutSymbolicLink: false)
+        return info != nil
+    }
+
+    func readAll(at path: FilePath) async throws -> Data {
+        return try await self.withFileHandle(forReadingAt: path) { handle in
+            let info = try await handle.info()
+            let size = Int64(info.size)
+            var data = Data()
+            var offset: Int64 = 0
+            while offset < size {
+                let chunk = try await handle.readChunk(
+                    fromAbsoluteOffset: offset, length: .bytes(64 * 1024))
+                if chunk.readableBytes == 0 { break }
+                data.append(contentsOf: chunk.readableBytesView)
+                offset += Int64(chunk.readableBytes)
+            }
+            return data
+        }
+    }
+
+    func writeFile(at path: FilePath, bytes: ByteBuffer) async throws {
+        _ = try await self.withFileHandle(
+            forWritingAt: path, options: .newFile(replaceExisting: true)
+        ) { handle in
+            let data = bytes.readableBytesView.map { $0 }
+            try await handle.write(contentsOf: data, toAbsoluteOffset: 0)
         }
     }
 }
@@ -74,10 +91,7 @@ actor FileSystemStorage: StorageBackend {
 
     func createBucket(name: String) async throws {
         let path = bucketPath(name)
-        print("DEBUG createBucket: path=\(path), rootPath=\(rootPath)")
-        let doesExist = try await fileSystem.exists(at: path)
-        print("DEBUG createBucket: exists=\(doesExist)")
-        if doesExist {
+        if try await fileSystem.exists(at: path) {
             throw S3Error.bucketAlreadyExists
         }
         try await fileSystem.createDirectory(
@@ -485,5 +499,41 @@ actor FileSystemStorage: StorageBackend {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
         _ = try? await fileSystem.removeItem(
             at: uPath, strategy: .platformDefault, recursively: true)
+    }
+
+    // MARK: - Bucket Policy
+
+    func getBucketPolicy(bucket: String) async throws -> BucketPolicy {
+        let policyPath = bucketPath(bucket).appending("policy.json")
+        guard try await fileSystem.exists(at: policyPath) else {
+            throw S3Error.noSuchBucketPolicy
+        }
+
+        let data = try await fileSystem.readAll(at: policyPath)
+        return try JSONDecoder().decode(BucketPolicy.self, from: data)
+    }
+
+    func putBucketPolicy(bucket: String, policy: BucketPolicy) async throws {
+        // Enforce bucket existence
+        let bPath = bucketPath(bucket)
+        if !(try await fileSystem.exists(at: bPath)) {
+            throw S3Error.noSuchBucket
+        }
+
+        let policyPath = bPath.appending("policy.json")
+        let data = try JSONEncoder().encode(policy)
+        try await fileSystem.writeFile(at: policyPath, bytes: ByteBuffer(data: data))
+    }
+
+    func deleteBucketPolicy(bucket: String) async throws {
+        let policyPath = bucketPath(bucket).appending("policy.json")
+        if try await fileSystem.exists(at: policyPath) {
+            try await fileSystem.removeItem(at: policyPath)
+        } else {
+            // S3 returns NoSuchBucketPolicy if checking? Or standard 204?
+            // API usually returns 204 No Content even if it didn't exist,
+            // but `DELETE /?policy` returns 204.
+            // However, `getBucketPolicy` throws.
+        }
     }
 }
