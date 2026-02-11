@@ -9,6 +9,7 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Non-blocking Architecture**: Built with [SwiftNIO](https://github.com/apple/swift-nio) and `_NIOFileSystem` for fully asynchronous, non-blocking I/O, ensuring high throughput and responsiveness.
 - **Streaming Data Paths**: Implements streaming for both uploads and downloads, supporting massive objects with minimal memory overhead.
 - **AWS Signature V4 Auth**: Implements industry-standard AWS Signature Version 4 authentication for secure and compatible requests.
+- **Bucket Policies**: Supports JSON-based IAM policies for granular access control.
 - **Extensible Storage**: Modular architecture allowing for different storage backends and metadata stores.
 
 ## Supported Operations
@@ -19,11 +20,16 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Delete Bucket**: `DELETE /:bucket`
 - **List Objects**: `GET /:bucket`
     - Supports `prefix`, `delimiter`, `marker`, and `max-keys` query parameters.
+- **Bucket Policy**:
+    - **Put Policy**: `PUT /:bucket?policy`
+    - **Get Policy**: `GET /:bucket?policy`
+    - **Delete Policy**: `DELETE /:bucket?policy`
 
 ### Objects
 - **Put Object**: `PUT /:bucket/:key`
     - Supports `x-amz-meta-*` headers for custom metadata.
     - Supports `Content-Type` persistence.
+    - Supports `x-amz-copy-source` for copying objects.
 - **Get Object**: `GET /:bucket/:key`
     - Supports `Range` header for partial content (e.g., `bytes=0-10`).
     - Returns persisted metadata and content type.
@@ -91,7 +97,7 @@ SwiftS3 enforces AWS Signature V4 authentication.
 - **Secret Access Key**: `password`
 - **Region**: `us-east-1` (or any valid region string)
 
-You can use these credentials with tools like the AWS CLI or SDKs.
+Users are stored in the SQLite metadata database (`users` table). You can manage users programmatically via the `UserStore` interface (API endpoints for user management are planned).
 
 ### Example with AWS CLI
 

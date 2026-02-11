@@ -13,8 +13,8 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 ## 2. Security & Identity (IAM)
 **Goal:** Enterprise-grade security and access control.
 
-- [ ] **Multi-User Identity**: Support multiple access keys/secrets via a configuration file or database.
-- [ ] **Bucket Policies**: Implement JSON-based IAM policies for granular bucket/prefix access control.
+- [x] **Multi-User Identity**: Support multiple users via SQLite database.
+- [x] **Bucket Policies**: Implement JSON-based IAM policies for granular bucket/prefix access control.
 - [ ] **ACLs**: Support basic Canned ACLs (private, public-read).
 - [x] **Signatures**: Verify `x-amz-content-sha256` payload checksums (currently only signature header is checked).
 
@@ -36,6 +36,6 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 ## 5. Development Workflow Improvements
 **Goal:** Ensure faster iteration cycles and better testing.
 
-- [ ] **Unit Tests**: Coverage for edge cases (`FileSystemStorage` logic).
-- [ ] **Integration Tests**: Docker-compose setup for real S3 client validation.
+- [x] **Unit Tests**: Coverage for edge cases (`FileSystemStorage` logic).
+- [x] **Integration Tests**: Tests for real S3 client validation using `HummingbirdTesting`.
 ---
