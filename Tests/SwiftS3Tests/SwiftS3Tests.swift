@@ -2,12 +2,22 @@ import Foundation
 import HTTPTypes
 import Hummingbird
 import HummingbirdTesting
+import NIO
+import SQLiteNIO
 import Testing
 
 @testable import SwiftS3
 
 @Suite("SwiftS3 Tests")
 struct SwiftS3Tests {
+
+    // Shared resources
+    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    static let threadPool: NIOThreadPool = {
+        let tp = NIOThreadPool(numberOfThreads: 2)
+        tp.start()
+        return tp
+    }()
 
     // MARK: - Helper
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
@@ -20,12 +30,23 @@ struct SwiftS3Tests {
             hostname: "127.0.0.1", port: 0, storagePath: storagePath, accessKey: "admin",
             secretKey: "password")
 
-        let storage = FileSystemStorage(rootPath: storagePath)
+        // Ensure storage directory exists
+        try? FileManager.default.createDirectory(
+            atPath: storagePath, withIntermediateDirectories: true)
+
+        // Initialize SQL Metadata Store
+        let metadataStore = try await SQLMetadataStore.create(
+            path: storagePath + "/metadata.sqlite",
+            on: Self.elg,
+            threadPool: Self.threadPool
+        )
+
+        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
         let controller = S3Controller(storage: storage)
 
-        let router = Router()
+        let router = Router(context: S3RequestContext.self)
         router.middlewares.add(S3ErrorMiddleware())
-        router.middlewares.add(S3Authenticator(accessKey: "admin", secretKey: "password"))
+        router.middlewares.add(S3Authenticator(userStore: metadataStore))
         controller.addRoutes(to: router)
 
         let app = Application(
@@ -36,6 +57,7 @@ struct SwiftS3Tests {
         try await app.test(.router, test)
 
         // Cleanup
+        try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
     }
 
@@ -215,15 +237,25 @@ struct SwiftS3Tests {
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
-        defer { try? FileManager.default.removeItem(atPath: storagePath) }
+
+        try? FileManager.default.createDirectory(
+            atPath: storagePath, withIntermediateDirectories: true)
+
+        let metadataStore = try await SQLMetadataStore.create(
+            path: storagePath + "/metadata.sqlite",
+            on: Self.elg,
+            threadPool: Self.threadPool
+        )
 
         let customAccess = "user123"
         let customSecret = "secret456"
+        try await metadataStore.createUser(
+            username: "custom", accessKey: customAccess, secretKey: customSecret)
 
-        let router = Router()
+        let router = Router(context: S3RequestContext.self)
         router.middlewares.add(S3ErrorMiddleware())
-        router.middlewares.add(S3Authenticator(accessKey: customAccess, secretKey: customSecret))
-        let storage = FileSystemStorage(rootPath: storagePath)
+        router.middlewares.add(S3Authenticator(userStore: metadataStore))
+        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
         S3Controller(storage: storage).addRoutes(to: router)
 
         let app = Application(
@@ -248,6 +280,9 @@ struct SwiftS3Tests {
                 #expect(response.status == .forbidden)
             }
         }
+
+        try await metadataStore.shutdown()
+        try? FileManager.default.removeItem(atPath: storagePath)
     }
 
     @Test("API: List Objects V2")

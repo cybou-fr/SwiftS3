@@ -154,24 +154,12 @@ actor FileSystemStorage: StorageBackend {
         try await fileSystem.createDirectory(
             at: path.removingLastComponent(), withIntermediateDirectories: true, permissions: nil)
 
-        // Write Metadata
-        if let metadata = metadata {
-            let meta = ObjectMetadata(
-                key: key,
-                size: 0,
-                lastModified: Date(),
-                eTag: nil,
-                contentType: metadata["Content-Type"],
-                customMetadata: metadata
-            )
-            try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
-        }
-
         // Write file
         var digest = SHA256()
         let handle = try await fileSystem.openFile(
             forWritingAt: path, options: .newFile(replaceExisting: true))
 
+        var finalSize: Int64 = 0
         do {
             var offset: Int64 = 0
             for try await var buffer in data {
@@ -180,13 +168,27 @@ actor FileSystemStorage: StorageBackend {
                 try await handle.write(contentsOf: bytes, toAbsoluteOffset: offset)
                 offset += Int64(bytes.count)
             }
+            finalSize = offset
             try await handle.close()
         } catch {
             try? await handle.close()
             throw error
         }
 
-        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+        let eTag = digest.finalize().map { String(format: "%02x", $0) }.joined()
+
+        // Write Metadata
+        let meta = ObjectMetadata(
+            key: key,
+            size: finalSize,
+            lastModified: Date(),
+            eTag: eTag,
+            contentType: metadata?["Content-Type"],
+            customMetadata: metadata ?? [:]
+        )
+        try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
+
+        return eTag
     }
 
     func getObject(bucket: String, key: String, range: ValidatedRange?) async throws -> (
@@ -433,6 +435,7 @@ actor FileSystemStorage: StorageBackend {
         let outHandle = try await fileSystem.openFile(
             forWritingAt: finalPath, options: .newFile(replaceExisting: true))
 
+        var finalSize: Int64 = 0
         do {
             var outOffset: Int64 = 0
 
@@ -466,6 +469,7 @@ actor FileSystemStorage: StorageBackend {
                     throw error
                 }
             }
+            finalSize = outOffset
             try await outHandle.close()
         } catch {
             try? await outHandle.close()
@@ -476,17 +480,15 @@ actor FileSystemStorage: StorageBackend {
             fullDigest.finalize().map { String(format: "%02x", $0) }.joined() + "-\(parts.count)"
 
         // Write Metadata
-        if let metadata = info.metadata {
-            let meta = ObjectMetadata(
-                key: key,
-                size: 0,
-                lastModified: Date(),
-                eTag: finalETag,
-                contentType: metadata["Content-Type"],
-                customMetadata: metadata
-            )
-            try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
-        }
+        let meta = ObjectMetadata(
+            key: key,
+            size: finalSize,
+            lastModified: Date(),
+            eTag: finalETag,
+            contentType: info.metadata?["Content-Type"],
+            customMetadata: info.metadata ?? [:]
+        )
+        try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
 
         // Cleanup
         _ = try? await fileSystem.removeItem(

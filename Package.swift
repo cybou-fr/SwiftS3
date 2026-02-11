@@ -38,6 +38,7 @@ let package = Package(
             dependencies: [
                 .target(name: "SwiftS3"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "SQLiteNIO", package: "sqlite-nio"),
             ]
         ),
     ]

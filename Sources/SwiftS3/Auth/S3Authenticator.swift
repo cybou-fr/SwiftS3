@@ -3,48 +3,38 @@ import Foundation
 import HTTPTypes
 import Hummingbird
 
-struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
-    let accessKey: String
-    let secretKey: String
+struct S3Authenticator: RouterMiddleware {
+    typealias Context = S3RequestContext
+    let userStore: UserStore
 
-    init(accessKey: String = "admin", secretKey: String = "password") {
-        self.accessKey = accessKey
-        self.secretKey = secretKey
+    init(userStore: UserStore) {
+        self.userStore = userStore
     }
 
     func handle(_ request: Input, context: Context, next: (Input, Context) async throws -> Output)
         async throws -> Output
     {
-        // 1. Check if Authorization header exists. If not, it might be an anonymous request.
         guard let authHeader = request.headers[.authorization] else {
-            // If no auth header, proceed (anonymous access) or fail?
             return try await next(request, context)
         }
 
-        // 2. Parse Auth Header
         guard authHeader.starts(with: "AWS4-HMAC-SHA256") else {
             return try await next(request, context)
         }
 
-        // 3. Verification Logic
-        let isValid = try await verifySignature(request: request, authHeader: authHeader)
-
-        guard isValid else {
+        if let accessKey = try await verifySignature(request: request, authHeader: authHeader) {
+            var context = context
+            context.principal = accessKey
+            return try await next(request, context)
+        } else {
             throw S3Error.signatureDoesNotMatch
         }
-
-        return try await next(request, context)
     }
 
-    // ... Placeholder for helper methods
-    func verifySignature(request: Request, authHeader: String) async throws -> Bool {
-        // Parse Authorization Header
-        // Example: AWS4-HMAC-SHA256 Credential=admin/20260210/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=...
-
+    func verifySignature(request: Request, authHeader: String) async throws -> String? {
         let components = authHeader.split(separator: ",", omittingEmptySubsequences: true)
-        guard components.count >= 3 else { return false }
+        guard components.count >= 3 else { return nil }
 
-        // Extract values
         var credentialPart = ""
         var signedHeadersPart = ""
         var signaturePart = ""
@@ -64,50 +54,47 @@ struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
             let signedHeadersRange = signedHeadersPart.range(of: "SignedHeaders="),
             let signatureRange = signaturePart.range(of: "Signature=")
         else {
-            return false
+            return nil
         }
 
         let credential = String(credentialPart[credentialRange.upperBound...])
         let signedHeaders = String(signedHeadersPart[signedHeadersRange.upperBound...])
         let signature = String(signaturePart[signatureRange.upperBound...])
 
-        // Credential Parts
         let credParts = credential.split(separator: "/")
-        guard credParts.count == 5 else { return false }
+        guard credParts.count == 5 else { return nil }
         let accessKeyID = String(credParts[0])
         let dateStamp = String(credParts[1])
         let region = String(credParts[2])
         let service = String(credParts[3])
 
-        guard accessKeyID == self.accessKey else { return false }  // Check Access Key
+        guard let user = try await userStore.getUser(accessKey: accessKeyID) else {
+            return nil
+        }
+        let secretKey = user.secretKey
 
-        // 1. Canonical Request
         let method = request.method.rawValue
         let uri = request.uri.path
-        // Query must be sorted by key
-        // query must be sorted by key
         let query = request.uri.queryParameters.map { "\($0.key)=\($0.value)" }.sorted().joined(
             separator: "&")
 
-        // Canonical Headers
-        // Note: Headers must be lowercased in keys.
         let headersToSign = signedHeaders.split(separator: ";").map { String($0) }
         var canonicalHeaders = ""
         for headerName in headersToSign {
             var value: String = ""
-            if let fieldName = HTTPField.Name(headerName), let v = request.headers[fieldName] {
-                value = v
-            } else if headerName == "host", let host = request.uri.host {
-                value = host
-                if let port = request.uri.port {
-                    value += ":\(port)"
+            if headerName == "host" {
+                // Use "host" header if available, manually constructed Name
+                if let v = request.headers[HTTPField.Name("host")!] {
+                    value = v
                 }
+            } else if let fieldName = HTTPField.Name(headerName), let v = request.headers[fieldName]
+            {
+                value = v
             }
-
-            // AWS Signature V4 requires all signed headers to be present in Canonical Headers
-            canonicalHeaders += "\(headerName):\(value)\n"
+            canonicalHeaders += "\(headerName.lowercased()):\(value)\n"
         }
 
+        let signedHeadersString = signedHeaders
         let payloadHash =
             request.headers[HTTPField.Name("x-amz-content-sha256")!] ?? "UNSIGNED-PAYLOAD"
 
@@ -116,43 +103,67 @@ struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
             \(uri)
             \(query)
             \(canonicalHeaders)
-            \(signedHeaders)
+            \(signedHeadersString)
             \(payloadHash)
             """
 
-        // 2. String to Sign
         let algorithm = "AWS4-HMAC-SHA256"
-        let requestDateTime = request.headers[HTTPField.Name("x-amz-date")!] ?? ""
-        let scope = "\(dateStamp)/\(region)/\(service)/aws4_request"
+        let credentialScope = "\(dateStamp)/\(region)/\(service)/aws4_request"
 
-        let canonicalRequestHash = SHA256.hash(data: Data(canonicalRequest.utf8)).map {
-            String(format: "%02x", $0)
-        }.joined()
+        let requestDate: String
+        if let xAmzDate = request.headers[HTTPField.Name("x-amz-date")!] {
+            requestDate = xAmzDate
+        } else if let date = request.headers[.date] {
+            requestDate = date
+        } else {
+            requestDate = ""
+        }
 
         let stringToSign = """
             \(algorithm)
-            \(requestDateTime)
-            \(scope)
-            \(canonicalRequestHash)
+            \(requestDate)
+            \(credentialScope)
+            \(SHA256.hash(data: Data(canonicalRequest.utf8)).hexString)
             """
 
-        // 3. Calculation
-        // Signing Key
-        let kSecret = "AWS4" + secretKey
-        let kDate = try hmac(key: Data(kSecret.utf8), data: Data(dateStamp.utf8))
-        let kRegion = try hmac(key: kDate, data: Data(region.utf8))
-        let kService = try hmac(key: kRegion, data: Data(service.utf8))
-        let kSigning = try hmac(key: kService, data: Data("aws4_request".utf8))
+        let kDate = try HMAC256.compute(dateStamp, key: "AWS4" + secretKey)
+        let kRegion = try HMAC256.compute(region, key: kDate)
+        let kService = try HMAC256.compute(service, key: kRegion)
+        let kSigning = try HMAC256.compute("aws4_request", key: kService)
+        let calculatedSignature = try HMAC256.compute(stringToSign, key: kSigning).hexString
 
-        let calculatedSignatureData = try hmac(key: kSigning, data: Data(stringToSign.utf8))
-        let calculatedSignature = calculatedSignatureData.map { String(format: "%02x", $0) }
-            .joined()
+        if calculatedSignature == signature {
+            return accessKeyID
+        } else {
+            return nil
+        }
+    }
+}
 
-        return signature == calculatedSignature
+enum HMAC256 {
+    static func compute(_ message: String, key: Data) throws -> Data {
+        let symmetricKey = SymmetricKey(data: key)
+        let signature = HMAC<SHA256>.authenticationCode(
+            for: Data(message.utf8), using: symmetricKey)
+        return Data(signature)
     }
 
-    private func hmac(key: Data, data: Data) throws -> Data {
-        let auth = HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: key))
-        return Data(auth)
+    static func compute(_ message: String, key: String) throws -> Data {
+        let symmetricKey = SymmetricKey(data: Data(key.utf8))
+        let signature = HMAC<SHA256>.authenticationCode(
+            for: Data(message.utf8), using: symmetricKey)
+        return Data(signature)
+    }
+}
+
+extension Data {
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+extension SHA256.Digest {
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -2,9 +2,21 @@ import ArgumentParser
 import Foundation
 import Hummingbird
 import Logging
+import NIO
+import SQLiteNIO
 
 @main
 struct SwiftS3: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "SwiftS3 Object Storage Server",
+        subcommands: [ServerCommand.self, UserCommand.self],
+        defaultSubcommand: ServerCommand.self
+    )
+}
+
+struct ServerCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "server")
+
     @Option(name: .shortAndLong, help: "Port to bind to")
     var port: Int = 8080
 
@@ -42,4 +54,105 @@ struct SwiftS3: AsyncParsableCommand {
             accessKey: finalAccessKey, secretKey: finalSecretKey)
         try await server.run()
     }
+}
+
+struct UserCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "user",
+        abstract: "Manage users",
+        subcommands: [Create.self, List.self, Delete.self]
+    )
+}
+
+extension UserCommand {
+    struct Create: AsyncParsableCommand {
+        @Argument(help: "Username")
+        var username: String
+
+        @Option(name: .customLong("access-key"), help: "Access Key")
+        var accessKey: String
+
+        @Option(name: .customLong("secret-key"), help: "Secret Key")
+        var secretKey: String
+
+        @Option(name: .shortAndLong, help: "Storage directory path")
+        var storage: String = "./data"
+
+        func run() async throws {
+            try await withUserStore(path: storage) { store in
+                try await store.createUser(
+                    username: username, accessKey: accessKey, secretKey: secretKey)
+                print("User '\(username)' created successfully.")
+            }
+        }
+    }
+
+    struct List: AsyncParsableCommand {
+        @Option(name: .shortAndLong, help: "Storage directory path")
+        var storage: String = "./data"
+
+        func run() async throws {
+            try await withUserStore(path: storage) { store in
+                let users = try await store.listUsers()
+                print("Registered Users:")
+                print("USERNAME             ACCESS KEY          ")
+                print(String(repeating: "-", count: 45))
+                for user in users {
+                    let u = user.username.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    let k = user.accessKey.padding(toLength: 20, withPad: " ", startingAt: 0)
+                    print("\(u) \(k)")
+                }
+            }
+        }
+    }
+
+    struct Delete: AsyncParsableCommand {
+        @Argument(help: "Access Key of the user to delete")
+        var accessKey: String
+
+        @Option(name: .shortAndLong, help: "Storage directory path")
+        var storage: String = "./data"
+
+        func run() async throws {
+            try await withUserStore(path: storage) { store in
+                // Check if exists?
+                if (try await store.getUser(accessKey: accessKey)) != nil {
+                    try await store.deleteUser(accessKey: accessKey)
+                    print("User with access key '\(accessKey)' deleted.")
+                } else {
+                    print("Error: User with access key '\(accessKey)' not found.")
+                    throw ExitCode.failure
+                }
+            }
+        }
+    }
+}
+
+// Helper to initialize store for CLI commands
+func withUserStore(path: String, operation: (UserStore) async throws -> Void) async throws {
+    let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    let threadPool = NIOThreadPool(numberOfThreads: 1)
+    threadPool.start()
+
+    // Ensure directory exists
+    if !FileManager.default.fileExists(atPath: path) {
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+    }
+
+    let store = try await SQLMetadataStore.create(
+        path: path + "/metadata.sqlite",
+        on: elg,
+        threadPool: threadPool
+    )
+
+    do {
+        try await operation(store)
+    } catch {
+        print("Error executing operation: \(error)")
+        // Continue cleanup
+    }
+
+    try await store.shutdown()
+    try await threadPool.shutdownGracefully()
+    try await elg.shutdownGracefully()
 }

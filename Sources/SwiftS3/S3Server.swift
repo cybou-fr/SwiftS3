@@ -33,10 +33,10 @@ struct S3Server {
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
         let controller = S3Controller(storage: storage)
 
-        let router = Router()
+        let router = Router(context: S3RequestContext.self)
         router.middlewares.add(S3RequestLogger())
         router.middlewares.add(S3ErrorMiddleware())
-        router.middlewares.add(S3Authenticator(accessKey: accessKey, secretKey: secretKey))
+        router.middlewares.add(S3Authenticator(userStore: metadataStore))
         controller.addRoutes(to: router)
 
         logger.info(

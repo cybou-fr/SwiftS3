@@ -10,7 +10,7 @@ struct S3Controller {
 
     let evaluator = PolicyEvaluator()
 
-    func addRoutes<Context: RequestContext>(to router: some Router<Context>) {
+    func addRoutes(to router: some Router<S3RequestContext>) {
         // List Buckets (Service)
         router.get(
             "/",
@@ -76,7 +76,7 @@ struct S3Controller {
             })
     }
 
-    @Sendable func listBuckets(request: Request, context: some RequestContext) async throws
+    @Sendable func listBuckets(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let buckets = try await storage.listBuckets()
@@ -86,7 +86,7 @@ struct S3Controller {
             status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
-    @Sendable func createBucket(request: Request, context: some RequestContext) async throws
+    @Sendable func createBucket(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let bucket = try context.parameters.require("bucket")
@@ -96,18 +96,16 @@ struct S3Controller {
             return try await putBucketPolicy(bucket: bucket, request: request, context: context)
         }
 
-        // CreateBucket permission check? Usually context-less or parent context.
-        // We assume allowed if authenticated for creation. Policy applies to EXISTING buckets.
-
         try await storage.createBucket(name: bucket)
         logger.info("Bucket created", metadata: ["bucket": "\(bucket)"])
         return Response(status: .ok)
     }
 
-    func putBucketPolicy(bucket: String, request: Request, context: some RequestContext)
+    func putBucketPolicy(bucket: String, request: Request, context: S3RequestContext)
         async throws -> Response
     {
-        try await checkPolicy(bucket: bucket, action: "s3:PutBucketPolicy", request: request)
+        try await checkPolicy(
+            bucket: bucket, action: "s3:PutBucketPolicy", request: request, context: context)
 
         let buffer = try await request.body.collect(upTo: 1024 * 1024)  // 1MB limit for policy
         let policy = try JSONDecoder().decode(BucketPolicy.self, from: buffer)
@@ -117,7 +115,7 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
-    @Sendable func deleteBucket(request: Request, context: some RequestContext) async throws
+    @Sendable func deleteBucket(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let bucket = try context.parameters.require("bucket")
@@ -127,42 +125,46 @@ struct S3Controller {
             return try await deleteBucketPolicy(bucket: bucket, context: context, request: request)
         }
 
-        try await checkPolicy(bucket: bucket, action: "s3:DeleteBucket", request: request)
+        try await checkPolicy(
+            bucket: bucket, action: "s3:DeleteBucket", request: request, context: context)
 
         try await storage.deleteBucket(name: bucket)
         logger.info("Bucket deleted", metadata: ["bucket": "\(bucket)"])
         return Response(status: .noContent)
     }
 
-    func deleteBucketPolicy(bucket: String, context: some RequestContext, request: Request)
+    func deleteBucketPolicy(bucket: String, context: S3RequestContext, request: Request)
         async throws -> Response
     {
-        try await checkPolicy(bucket: bucket, action: "s3:DeleteBucketPolicy", request: request)
+        try await checkPolicy(
+            bucket: bucket, action: "s3:DeleteBucketPolicy", request: request, context: context)
         try await storage.deleteBucketPolicy(bucket: bucket)
         logger.info("Bucket policy deleted", metadata: ["bucket": "\(bucket)"])
         return Response(status: .noContent)
     }
 
-    @Sendable func headBucket(request: Request, context: some RequestContext) async throws
+    @Sendable func headBucket(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let bucket = try context.parameters.require("bucket")
-        try await checkPolicy(bucket: bucket, action: "s3:ListBucket", request: request)
+        try await checkPolicy(
+            bucket: bucket, action: "s3:ListBucket", request: request, context: context)
         try await storage.headBucket(name: bucket)
         return Response(status: .ok)
     }
 
-    @Sendable func listObjects(request: Request, context: some RequestContext) async throws
+    @Sendable func listObjects(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let bucket = try context.parameters.require("bucket")
 
         // Check if this is a Policy operation
         if request.uri.queryParameters.get("policy") != nil {
-            return try await getBucketPolicy(bucket: bucket, context: context)
+            return try await getBucketPolicy(bucket: bucket, context: context, request: request)
         }
 
-        try await checkPolicy(bucket: bucket, action: "s3:ListBucket", request: request)
+        try await checkPolicy(
+            bucket: bucket, action: "s3:ListBucket", request: request, context: context)
 
         let prefix = request.uri.queryParameters.get("prefix")
         let delimiter = request.uri.queryParameters.get("delimiter")
@@ -193,19 +195,12 @@ struct S3Controller {
             status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
-    func getBucketPolicy(bucket: String, context: some RequestContext) async throws -> Response {
-        // Technically getBucketPolicy permission check
-        // But we called this from listObjects which checked ListBucket?
-        // No, we should check GetBucketPolicy specific permission.
-        // Implementation note: The dispatch logic calls this *instead* of listObjects logic.
-        // But we didn't pass 'request' to getBucketPolicy in previous edit?
-        // Let's assume we need to fix signature of getBucketPolicy or pull it from context if possible?
-        // No, we need to pass request.
-        // I will fix getBucketPolicy signature in a separate edit or let it fail for now and fix up.
-        // Actually, let's fix it here if possible.
-        // But wait, the previous edit defined getBucketPolicy(bucket:context:). I need to update it to take request.
+    func getBucketPolicy(bucket: String, context: S3RequestContext, request: Request) async throws
+        -> Response
+    {
+        try await checkPolicy(
+            bucket: bucket, action: "s3:GetBucketPolicy", request: request, context: context)
 
-        // Retaining original implementation for now, will fix policy check in getBucketPolicy separately.
         let policy = try await storage.getBucketPolicy(bucket: bucket)
         let data = try JSONEncoder().encode(policy)
         let buffer = ByteBuffer(data: data)
@@ -214,17 +209,14 @@ struct S3Controller {
             body: .init(byteBuffer: buffer))
     }
 
-    @Sendable func putObject(request: Request, context: some RequestContext) async throws
+    @Sendable func putObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let (bucket, key) = try parsePath(request.uri.path)
-        try await checkPolicy(bucket: bucket, key: key, action: "s3:PutObject", request: request)
+        try await checkPolicy(
+            bucket: bucket, key: key, action: "s3:PutObject", request: request, context: context)
 
         // Check for Upload Part
-        // Query params are not directly accessible in Hummingbird 2 Request object easily via property?
-        // URI.query is string. Need manual parsing or URLComponents.
-        // Hummingbird 2: request.uri.query is String?
-
         let query = parseQuery(request.uri.query)
 
         if let partNumberStr = query["partNumber"], let uploadId = query["uploadId"],
@@ -239,15 +231,13 @@ struct S3Controller {
 
         // Check for Copy Source
         if let copySource = request.headers[HTTPField.Name("x-amz-copy-source")!] {
-            // Format: /bucket/key or bucket/key
-            // Removing leading slash if present
             var source = copySource
             if source.hasPrefix("/") {
                 source.removeFirst()
             }
             let components = source.split(separator: "/", maxSplits: 1)
             guard components.count == 2 else {
-                throw S3Error.invalidRequest  // Or bad request
+                throw S3Error.invalidRequest
             }
             let srcBucket = String(components[0])
             let srcKey = String(components[1])
@@ -279,13 +269,11 @@ struct S3Controller {
         let etag = try await storage.putObject(
             bucket: bucket, key: key, data: request.body, size: contentLength, metadata: metadata)
 
-        // Verify payload checksum if provided
         if let declaredHash = request.headers[HTTPField.Name("x-amz-content-sha256")!],
             declaredHash != "UNSIGNED-PAYLOAD",
             declaredHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
         {
             if etag != declaredHash {
-                // Delete the object since verification failed
                 try? await storage.deleteObject(bucket: bucket, key: key)
                 logger.warning(
                     "Payload checksum mismatch",
@@ -304,7 +292,7 @@ struct S3Controller {
     }
 
     @Sendable func postObject(
-        request: Request, context: some RequestContext, isBucketOperation: Bool
+        request: Request, context: S3RequestContext, isBucketOperation: Bool
     ) async throws
         -> Response
     {
@@ -334,7 +322,8 @@ struct S3Controller {
             }
 
             try await checkPolicy(
-                bucket: bucket, key: key, action: "s3:PutObject", request: request)
+                bucket: bucket, key: key, action: "s3:PutObject", request: request, context: context
+            )
 
             let uploadId = try await storage.createMultipartUpload(
                 bucket: bucket, key: key, metadata: metadata)
@@ -346,9 +335,9 @@ struct S3Controller {
         } else if let uploadId = query["uploadId"] {
             // Complete Multipart Upload
             try await checkPolicy(
-                bucket: bucket, key: key, action: "s3:PutObject", request: request)
-            // We need to read the body (XML) to get the list of parts.
-            // request.body is AsyncStream. We need to collect it.
+                bucket: bucket, key: key, action: "s3:PutObject", request: request, context: context
+            )
+
             var buffer = ByteBuffer()
             for try await var chunk in request.body {
                 buffer.writeBuffer(&chunk)
@@ -358,7 +347,6 @@ struct S3Controller {
 
             let eTag = try await storage.completeMultipartUpload(
                 bucket: bucket, key: key, uploadId: uploadId, parts: parts)
-            // Location should technically be full URL
             let location = "http://localhost:8080/\(bucket)/\(key)"
             let resultXml = XML.completeMultipartUploadResult(
                 bucket: bucket, key: key, eTag: eTag, location: location)
@@ -367,9 +355,9 @@ struct S3Controller {
                 body: .init(byteBuffer: ByteBuffer(string: resultXml)))
         } else if query.keys.contains("delete") {
             // Delete Objects
-            // Check bucket-level delete permission for V1 approximation
             try await checkPolicy(
-                bucket: bucket, key: nil, action: "s3:DeleteObject", request: request)
+                bucket: bucket, key: nil, action: "s3:DeleteObject", request: request,
+                context: context)
 
             var buffer = ByteBuffer()
             for try await var chunk in request.body {
@@ -389,31 +377,23 @@ struct S3Controller {
         return Response(status: .badRequest)
     }
 
-    @Sendable func getObject(request: Request, context: some RequestContext) async throws
+    @Sendable func getObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let (bucket, key) = try parsePath(request.uri.path)
-        try await checkPolicy(bucket: bucket, key: key, action: "s3:GetObject", request: request)
+        try await checkPolicy(
+            bucket: bucket, key: key, action: "s3:GetObject", request: request, context: context)
 
         // Parse Range Header
         var range: ValidatedRange? = nil
         if let rangeHeader = request.headers[.range] {
-            // Simple parsing for bytes=start-end
             if rangeHeader.starts(with: "bytes=") {
-                let value = rangeHeader.dropFirst(6)  // remove "bytes="
+                let value = rangeHeader.dropFirst(6)
                 let components = value.split(separator: "-", omittingEmptySubsequences: false)
                 if components.count == 2 {
                     let startStr = String(components[0])
                     let endStr = String(components[1])
 
-                    // We need object size to validate/resolved range
-                    // But getObject returns metadata.
-                    // Optimization: In a real DB we'd check metadata first.
-                    // Here, getObject calls getObjectMetadata internally anyway.
-                    // But to resolve open-ended ranges (100-), we need the size *before* calling storage.getObject
-                    // because storage.getObject now takes a validated range.
-
-                    // So we must fetch metadata first.
                     let metadata = try await storage.getObjectMetadata(bucket: bucket, key: key)
                     let objectSize = metadata.size
 
@@ -421,17 +401,14 @@ struct S3Controller {
                     var end: Int64 = objectSize - 1
 
                     if startStr.isEmpty && !endStr.isEmpty {
-                        // Suffix: -500
                         if let suffix = Int64(endStr) {
                             start = max(0, objectSize - suffix)
                         }
                     } else if !startStr.isEmpty && endStr.isEmpty {
-                        // Start only: 100-
                         if let s = Int64(startStr) {
                             start = s
                         }
                     } else if let s = Int64(startStr), let e = Int64(endStr) {
-                        // Specific: 100-200
                         start = s
                         end = min(e, objectSize - 1)
                     }
@@ -478,11 +455,12 @@ struct S3Controller {
         }
     }
 
-    @Sendable func deleteObject(request: Request, context: some RequestContext) async throws
+    @Sendable func deleteObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let (bucket, key) = try parsePath(request.uri.path)
-        try await checkPolicy(bucket: bucket, key: key, action: "s3:DeleteObject", request: request)
+        try await checkPolicy(
+            bucket: bucket, key: key, action: "s3:DeleteObject", request: request, context: context)
         let query = parseQuery(request.uri.query)
 
         if let uploadId = query["uploadId"] {
@@ -495,11 +473,12 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
-    @Sendable func headObject(request: Request, context: some RequestContext) async throws
+    @Sendable func headObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
         let (bucket, key) = try parsePath(request.uri.path)
-        try await checkPolicy(bucket: bucket, key: key, action: "s3:GetObject", request: request)
+        try await checkPolicy(
+            bucket: bucket, key: key, action: "s3:GetObject", request: request, context: context)
 
         let metadata = try await storage.getObjectMetadata(bucket: bucket, key: key)
 
@@ -524,7 +503,7 @@ struct S3Controller {
     private func parsePath(_ path: String) throws -> (String, String) {
         let components = path.split(separator: "/")
         guard components.count >= 2 else {
-            throw S3Error.noSuchKey  // Or bad request
+            throw S3Error.noSuchKey
         }
         let bucket = String(components[0])
         let key = components.dropFirst().joined(separator: "/")
@@ -545,7 +524,10 @@ struct S3Controller {
         return info
     }
 
-    func checkPolicy(bucket: String, key: String? = nil, action: String, request: Request)
+    func checkPolicy(
+        bucket: String, key: String? = nil, action: String, request: Request,
+        context: S3RequestContext
+    )
         async throws
     {
         // 1. Get Policy (if exists)
@@ -557,14 +539,11 @@ struct S3Controller {
             if let s3Err = error as? S3Error, s3Err.code == "NoSuchBucketPolicy" {
                 return
             }
-            // For FileSystemStorage, it throws NoSuchBucketPolicy if missing.
-            // If other error, we might want to fail?
-            // Assume missing policy means allowed.
             return
         }
 
-        // 2. Extract Principal
-        let principal = extractPrincipal(from: request)
+        // 2. Extract Principal from Context
+        let principal = context.principal
 
         // 3. Resource
         var resource = "arn:aws:s3:::\(bucket)"
@@ -577,35 +556,30 @@ struct S3Controller {
             policy: policy,
             request: PolicyRequest(principal: principal, action: action, resource: resource))
 
-        if decision == .deny {
+        // 5. Enforce
+
+        switch decision {
+        case .deny:
             logger.warning(
-                "Access Denied by Bucket Policy",
+                "Access Denied by Bucket Policy (Explicit Deny)",
                 metadata: [
                     "bucket": "\(bucket)", "action": "\(action)",
                     "principal": "\(principal ?? "anon")",
                 ])
             throw S3Error.accessDenied
-        }
-    }
 
-    func extractPrincipal(from request: Request) -> String? {
-        guard let authHeader = request.headers[.authorization] else { return nil }
-        // Format: AWS4-HMAC-SHA256 Credential=<AccessKey>/<Date>/<Region>/<Service>/aws4_request, ...
-        // We just need the AccessKey.
+        case .implicitDeny:
+            // If we want "Safe by Default" when a policy is present, we must deny if not allowed.
+            logger.warning(
+                "Access Denied by Bucket Policy (Implicit Deny / No Match)",
+                metadata: [
+                    "bucket": "\(bucket)", "action": "\(action)",
+                    "principal": "\(principal ?? "anon")",
+                ])
+            throw S3Error.accessDenied
 
-        let components = authHeader.split(separator: ",", omittingEmptySubsequences: true)
-        for component in components {
-            let trimmed = component.trimmingCharacters(in: .whitespaces)
-            if trimmed.contains("Credential=") {
-                if let range = trimmed.range(of: "Credential=") {
-                    let credential = String(trimmed[range.upperBound...])
-                    let parts = credential.split(separator: "/")
-                    if let accessKey = parts.first {
-                        return String(accessKey)
-                    }
-                }
-            }
+        case .allow:
+            return
         }
-        return nil
     }
 }
