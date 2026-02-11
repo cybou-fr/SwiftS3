@@ -69,6 +69,7 @@ protocol StorageBackend: Sendable {
         metadata: ObjectMetadata, body: AsyncStream<ByteBuffer>?
     )
     func deleteObject(bucket: String, key: String) async throws
+    func deleteObjects(bucket: String, keys: [String]) async throws -> [String]
     func getObjectMetadata(bucket: String, key: String) async throws -> ObjectMetadata
 
     // Multipart Upload

@@ -16,14 +16,16 @@ struct SwiftS3Tests {
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
-        let server = S3Server(hostname: "127.0.0.1", port: 0, storagePath: storagePath)
+        let server = S3Server(
+            hostname: "127.0.0.1", port: 0, storagePath: storagePath, accessKey: "admin",
+            secretKey: "password")
 
         let storage = FileSystemStorage(rootPath: storagePath)
         let controller = S3Controller(storage: storage)
 
         let router = Router()
-        router.middlewares.add(S3Authenticator())
         router.middlewares.add(S3ErrorMiddleware())
+        router.middlewares.add(S3Authenticator(accessKey: "admin", secretKey: "password"))
         controller.addRoutes(to: router)
 
         let app = Application(
@@ -208,6 +210,46 @@ struct SwiftS3Tests {
         }
     }
 
+    @Test("API: Configurable Authentication")
+    func testAPIConfigurableAuth() async throws {
+        let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString
+        ).path
+        defer { try? FileManager.default.removeItem(atPath: storagePath) }
+
+        let customAccess = "user123"
+        let customSecret = "secret456"
+
+        let router = Router()
+        router.middlewares.add(S3ErrorMiddleware())
+        router.middlewares.add(S3Authenticator(accessKey: customAccess, secretKey: customSecret))
+        let storage = FileSystemStorage(rootPath: storagePath)
+        S3Controller(storage: storage).addRoutes(to: router)
+
+        let app = Application(
+            router: router,
+            configuration: .init(address: .hostname("127.0.0.1", port: 0))
+        )
+
+        try await app.test(.router) { client in
+            let helper = AWSAuthHelper(accessKey: customAccess, secretKey: customSecret)
+            let url = URL(string: "http://localhost:8080/")!
+            let headers = try helper.signRequest(method: .get, url: url)
+
+            try await client.execute(uri: "/", method: .get, headers: headers) { response in
+                #expect(response.status == .ok)
+            }
+
+            // Test with WRONG credentials
+            let wrongHelper = AWSAuthHelper(accessKey: "wrong", secretKey: "credentials")
+            let wrongHeaders = try wrongHelper.signRequest(method: .get, url: url)
+
+            try await client.execute(uri: "/", method: .get, headers: wrongHeaders) { response in
+                #expect(response.status == .forbidden)
+            }
+        }
+    }
+
     @Test("API: List Objects V2")
     func testAPIListObjectsV2() async throws {
         try await withApp { app in
@@ -238,6 +280,71 @@ struct SwiftS3Tests {
                 #expect(body.contains("<ListBucketResult"))
                 #expect(body.contains("<KeyCount>3</KeyCount>"))
                 #expect(body.contains("<Key>obj1</Key>"))
+            }
+        }
+    }
+
+    @Test("API: Delete Objects (Bulk Delete)")
+    func testAPIDeleteObjects() async throws {
+        try await withApp { app in
+            // Create Bucket
+            let helper = AWSAuthHelper()
+            let bucketUrl = URL(string: "http://localhost:8080/delete-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(uri: "/delete-bucket", method: .put, headers: createHeaders) {
+                _ in
+            }
+
+            // Put Objects
+            let keys = ["obj1", "obj2", "obj3"]
+            for key in keys {
+                let objectUrl = URL(string: "http://localhost:8080/delete-bucket/\(key)")!
+                let headers = try helper.signRequest(method: .put, url: objectUrl, payload: "data")
+                try await app.execute(
+                    uri: "/delete-bucket/\(key)", method: .put, headers: headers,
+                    body: ByteBuffer(string: "data")
+                ) { _ in }
+            }
+
+            // Verify they exist
+            let listUrl = URL(string: "http://localhost:8080/delete-bucket")!
+            let listHeaders = try helper.signRequest(method: .get, url: listUrl)
+            try await app.execute(uri: "/delete-bucket", method: .get, headers: listHeaders) {
+                response in
+                let body = String(buffer: response.body)
+                #expect(body.contains("obj1"))
+                #expect(body.contains("obj2"))
+                #expect(body.contains("obj3"))
+            }
+
+            // Bulk Delete
+            let deleteXml = """
+                <Delete>
+                    <Object><Key>obj1</Key></Object>
+                    <Object><Key>obj2</Key></Object>
+                </Delete>
+                """
+            let bulkDeleteUrl = URL(string: "http://localhost:8080/delete-bucket?delete")!
+            let deleteHeaders = try helper.signRequest(
+                method: .post, url: bulkDeleteUrl, payload: deleteXml)
+            try await app.execute(
+                uri: "/delete-bucket?delete", method: .post, headers: deleteHeaders,
+                body: ByteBuffer(string: deleteXml)
+            ) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body.contains("<Deleted>"))
+                #expect(body.contains("<Key>obj1</Key>"))
+                #expect(body.contains("<Key>obj2</Key>"))
+            }
+
+            // Verify they are gone
+            try await app.execute(uri: "/delete-bucket", method: .get, headers: listHeaders) {
+                response in
+                let body = String(buffer: response.body)
+                #expect(!body.contains("obj1"))
+                #expect(!body.contains("obj2"))
+                #expect(body.contains("obj3"))
             }
         }
     }

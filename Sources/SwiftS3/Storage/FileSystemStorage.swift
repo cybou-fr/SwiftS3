@@ -166,6 +166,15 @@ actor FileSystemStorage: StorageBackend {
         }
     }
 
+    func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
+        var deleted: [String] = []
+        for key in keys {
+            try? await deleteObject(bucket: bucket, key: key)
+            deleted.append(key)
+        }
+        return deleted
+    }
+
     func copyObject(fromBucket: String, fromKey: String, toBucket: String, toKey: String)
         async throws -> ObjectMetadata
     {

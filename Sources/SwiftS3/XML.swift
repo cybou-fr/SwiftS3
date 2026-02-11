@@ -182,6 +182,55 @@ struct XML {
 
         return parts.sorted { $0.partNumber < $1.partNumber }
     }
+
+    static func deleteResult(
+        deleted: [String], errors: [(key: String, code: String, message: String)]
+    ) -> String {
+        return XMLBuilder(
+            root: "DeleteResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            var xml = ""
+            xml += deleted.map { key in
+                XMLBuilder.element("Deleted") {
+                    XMLBuilder.element("Key", key)
+                }
+            }.joined()
+
+            xml += errors.map { error in
+                XMLBuilder.element("Error") {
+                    XMLBuilder.element("Key", error.key) + XMLBuilder.element("Code", error.code)
+                        + XMLBuilder.element("Message", error.message)
+                }
+            }.joined()
+
+            return xml
+        }.content
+    }
+
+    // Helper to parse DeleteObjects request body
+    static func parseDeleteObjects(xml: String) -> [String] {
+        var keys: [String] = []
+        // Simple regex to find <Key>...</Key> inside <Delete>...<Object>...</Object>...</Delete>
+        // But the input XML structure is:
+        // <Delete>
+        //   <Object><Key>key1</Key></Object>
+        //   <Object><Key>key2</Key></Object>
+        // </Delete>
+
+        let keyPattern = "<Key>(.*?)</Key>"
+        let keyRegex = try! NSRegularExpression(
+            pattern: keyPattern, options: [.dotMatchesLineSeparators])
+        let nsString = xml as NSString
+        let matches = keyRegex.matches(
+            in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for match in matches {
+            let key = nsString.substring(with: match.range(at: 1))
+            keys.append(key)
+        }
+        return keys
+    }
 }
 
 // Helper to expose private content property from XMLBuilder because I defined it private but need it here.

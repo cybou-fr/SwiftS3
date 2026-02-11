@@ -59,9 +59,16 @@ struct S3Controller {
                 try await self.headObject(request: request, context: context)
             })
         router.post(
+            ":bucket",
+            use: { request, context in
+                try await self.postObject(
+                    request: request, context: context, isBucketOperation: true)
+            })
+        router.post(
             ":bucket/**",
             use: { request, context in
-                try await self.postObject(request: request, context: context)
+                try await self.postObject(
+                    request: request, context: context, isBucketOperation: false)
             })
     }
 
@@ -200,10 +207,21 @@ struct S3Controller {
         return Response(status: .ok, headers: [.eTag: etag])
     }
 
-    @Sendable func postObject(request: Request, context: some RequestContext) async throws
+    @Sendable func postObject(
+        request: Request, context: some RequestContext, isBucketOperation: Bool
+    ) async throws
         -> Response
     {
-        let (bucket, key) = try parsePath(request.uri.path)
+        let bucket: String
+        let key: String
+
+        if isBucketOperation {
+            bucket = try context.parameters.require("bucket")
+            key = ""
+        } else {
+            (bucket, key) = try parsePath(request.uri.path)
+        }
+
         let query = parseQuery(request.uri.query)
 
         if query.keys.contains("uploads") {
@@ -243,6 +261,21 @@ struct S3Controller {
             let location = "http://localhost:8080/\(bucket)/\(key)"
             let resultXml = XML.completeMultipartUploadResult(
                 bucket: bucket, key: key, eTag: eTag, location: location)
+            return Response(
+                status: .ok, headers: [.contentType: "application/xml"],
+                body: .init(byteBuffer: ByteBuffer(string: resultXml)))
+        } else if query.keys.contains("delete") {
+            // Delete Objects
+            var buffer = ByteBuffer()
+            for try await var chunk in request.body {
+                buffer.writeBuffer(&chunk)
+            }
+            let xmlStr = String(buffer: buffer)
+            let keys = XML.parseDeleteObjects(xml: xmlStr)
+
+            let deleted = try await storage.deleteObjects(bucket: bucket, keys: keys)
+            let resultXml = XML.deleteResult(deleted: deleted, errors: [])
+
             return Response(
                 status: .ok, headers: [.contentType: "application/xml"],
                 body: .init(byteBuffer: ByteBuffer(string: resultXml)))

@@ -4,8 +4,13 @@ import HTTPTypes
 import Hummingbird
 
 struct S3Authenticator<Context: RequestContext>: RouterMiddleware {
-    let secretKey: String = "password"  // Hardcoded for MVP
-    let accessKey: String = "admin"
+    let accessKey: String
+    let secretKey: String
+
+    init(accessKey: String = "admin", secretKey: String = "password") {
+        self.accessKey = accessKey
+        self.secretKey = secretKey
+    }
 
     func handle(_ request: Input, context: Context, next: (Input, Context) async throws -> Output)
         async throws -> Output

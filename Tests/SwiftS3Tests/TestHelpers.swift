@@ -73,7 +73,12 @@ struct AWSAuthHelper {
         // For strictness we should parse and sort.
         var canonicalQuery = ""
         if !query.isEmpty {
-            let items = query.split(separator: "&").sorted()
+            let items = query.split(separator: "&").map { item -> String in
+                if !item.contains("=") {
+                    return "\(item)="
+                }
+                return String(item)
+            }.sorted()
             canonicalQuery = items.joined(separator: "&")
         }
 
