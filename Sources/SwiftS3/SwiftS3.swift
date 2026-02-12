@@ -133,6 +133,14 @@ extension UserCommand {
 }
 
 // Helper to initialize store for CLI commands
+/// Creates and configures the necessary infrastructure for user management operations.
+/// Sets up NIO event loop group and thread pool for async database operations.
+/// Ensures proper cleanup of resources after operation completion.
+///
+/// - Parameters:
+///   - path: File system path to the storage directory
+///   - operation: Async closure that performs the user management operation
+/// - Throws: Any error from the operation or resource initialization
 func withUserStore(path: String, operation: (UserStore) async throws -> Void) async throws {
     let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     let threadPool = NIOThreadPool(numberOfThreads: 1)

@@ -5,6 +5,13 @@ import Hummingbird
 
 /// Middleware for authenticating S3 API requests using AWS signature version 4.
 /// Supports both header-based and query parameter-based authentication.
+/// Validates request signatures against stored user credentials to ensure request integrity.
+///
+/// Authentication flow:
+/// 1. Extract credentials from Authorization header or query parameters
+/// 2. Verify signature using AWS Signature Version 4 algorithm
+/// 3. Set authenticated principal in request context
+/// 4. Allow request to proceed or throw authentication error
 struct S3Authenticator: RouterMiddleware {
     typealias Context = S3RequestContext
     let userStore: UserStore
@@ -14,6 +21,15 @@ struct S3Authenticator: RouterMiddleware {
     }
 
     /// Processes authentication for incoming requests.
+    /// Determines authentication method (header vs query params) and validates credentials.
+    /// Prevents multiple authentication methods and ensures proper signature verification.
+    ///
+    /// - Parameters:
+    ///   - request: The incoming HTTP request
+    ///   - context: S3 request context to be updated with authenticated principal
+    ///   - next: Next middleware/router in the chain
+    /// - Returns: Response from downstream handlers if authentication succeeds
+    /// - Throws: S3Error for authentication failures or invalid request format
     func handle(_ request: Input, context: Context, next: (Input, Context) async throws -> Output)
         async throws -> Output
     {

@@ -2,6 +2,7 @@ import Foundation
 
 /// Utility struct for generating XML responses compatible with AWS S3 API.
 /// Provides static methods for creating XML documents for various S3 operations.
+/// All methods return properly formatted XML strings that match AWS S3 response formats.
 struct XML {
     /// Generates XML for listing all buckets owned by a user.
     static func listBuckets(buckets: [(name: String, created: Date)]) -> String {
@@ -18,6 +19,17 @@ struct XML {
         }.content
     }
 
+    /// Generates XML response for listing objects in a bucket.
+    /// Supports AWS S3 ListObjectsV1 API format with pagination support.
+    ///
+    /// - Parameters:
+    ///   - bucket: The bucket name being listed
+    ///   - result: Query result containing objects and pagination info
+    ///   - prefix: Object key prefix filter (empty string for no filter)
+    ///   - marker: Pagination marker for continuing listings
+    ///   - maxKeys: Maximum number of objects to return (0-1000)
+    ///   - isTruncated: Whether the listing is truncated due to maxKeys limit
+    /// - Returns: XML string in AWS S3 ListBucketResult format
     static func listObjects(
         bucket: String, result: ListObjectsResult, prefix: String, marker: String, maxKeys: Int,
         isTruncated: Bool

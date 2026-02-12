@@ -3,8 +3,11 @@ import NIO
 
 @testable import SwiftS3
 
-/// Mock storage backend for testing controller logic in isolation
-actor MockStorage: StorageBackend {
+/// Mock storage backend for testing controller logic in isolation.
+/// Provides in-memory storage implementation that mimics StorageBackend protocol.
+/// Allows unit testing of S3Controller without file system or database dependencies.
+/// Includes configurable failure modes for testing error handling scenarios.
+class MockStorage: @unchecked Sendable, StorageBackend {
     // Storage for mock data
     private var buckets: Set<String> = []
     private var objects: [String: [String: ObjectMetadata]] = [:] // bucket -> key -> metadata
@@ -22,7 +25,8 @@ actor MockStorage: StorageBackend {
     private var uploadParts: [String: [Int: Data]] = [:] // uploadId -> partNumber -> data
     private var nextUploadId = 1
 
-    // Test helpers
+    // Test helper flags - set these to simulate various failure scenarios
+    // Allows testing error handling paths in the controller without complex setup
     nonisolated(unsafe) var shouldFailOnCreateBucket = false
     nonisolated(unsafe) var shouldFailOnPutObject = false
     nonisolated(unsafe) var shouldFailOnGetObject = false
@@ -295,9 +299,6 @@ actor MockStorage: StorageBackend {
     }
 
     func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy) async throws {
-        throw S3Error.internalError
-        // ... rest of the method
-
         if let key = key {
             if acls[bucket] == nil {
                 acls[bucket] = [:]
@@ -502,7 +503,7 @@ actor MockStorage: StorageBackend {
             try await Task.sleep(for: .seconds(operationDelay))
         }
 
-        guard var upload = multipartUploads[uploadId], upload.bucket == bucket, upload.key == key else {
+        guard let upload = multipartUploads[uploadId], upload.bucket == bucket, upload.key == key else {
             throw S3Error.noSuchUpload
         }
 

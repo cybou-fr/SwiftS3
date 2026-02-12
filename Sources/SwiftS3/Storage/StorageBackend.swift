@@ -2,6 +2,8 @@ import Foundation
 import Hummingbird
 
 /// Metadata associated with an S3 object, including size, timestamps, and ownership.
+/// Contains all the information needed to describe an object without its actual data.
+/// Used for listing operations, HEAD requests, and metadata queries.
 struct ObjectMetadata: Sendable {
     let key: String
     let size: Int64
@@ -33,6 +35,8 @@ struct ObjectMetadata: Sendable {
 }
 
 /// Represents a key-value tag for S3 objects or buckets.
+/// Tags are metadata labels that can be attached to resources for organization,
+/// cost tracking, and access control purposes. Each resource can have up to 10 tags.
 public struct S3Tag: Sendable, Codable, Equatable {
     let key: String
     let value: String
@@ -44,6 +48,8 @@ public struct S3Tag: Sendable, Codable, Equatable {
 }
 
 /// Information about a part in a multipart upload.
+/// Used to track individual chunks of data in large object uploads.
+/// Each part has a sequential number and an ETag for integrity verification.
 struct PartInfo: Sendable, Codable {
     let partNumber: Int
     let eTag: String
@@ -90,6 +96,8 @@ struct ListVersionsResult: Sendable {
 
 /// Protocol defining the interface for S3-compatible storage backends.
 /// Implementations provide persistent storage for buckets, objects, and metadata.
+/// This abstraction allows SwiftS3 to support different storage engines (file system, cloud storage, etc.)
+/// while maintaining a consistent API for the S3 controller layer.
 protocol StorageBackend: Sendable {
     /// Lists all buckets in the storage system.
     func listBuckets() async throws -> [(name: String, created: Date)]

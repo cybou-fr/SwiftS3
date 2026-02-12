@@ -8,6 +8,9 @@ import Testing
 @testable import SwiftS3
 
 @Suite("End-to-End Integration Tests")
+/// Comprehensive integration tests that validate the complete S3 server functionality.
+/// Tests cover full request lifecycle from HTTP reception through storage operations.
+/// Uses real file system and SQLite storage for realistic testing scenarios.
 struct EndToEndIntegrationTests {
 
     static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -17,6 +20,13 @@ struct EndToEndIntegrationTests {
         return tp
     }()
 
+    /// Test helper that creates a complete S3 server instance for integration testing.
+    /// Sets up temporary storage directory, initializes SQLite metadata store,
+    /// configures authentication, and starts a test server instance.
+    /// Automatically cleans up resources after test completion.
+    ///
+    /// - Parameter test: Async closure that receives a test client for making requests
+    /// - Throws: Any errors from server setup, test execution, or cleanup
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
         async throws
     {

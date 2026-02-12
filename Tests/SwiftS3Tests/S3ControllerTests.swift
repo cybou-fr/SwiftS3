@@ -9,8 +9,17 @@ import Testing
 @testable import SwiftS3
 
 @Suite("S3Controller Unit Tests")
+/// Unit tests for S3Controller focusing on request handling and business logic.
+/// Uses MockStorage for isolated testing of controller behavior without file system dependencies.
+/// Tests cover bucket operations, error handling, and authentication integration.
 struct S3ControllerTests {
 
+    /// Creates a test application instance with S3Controller and mock storage.
+    /// Sets up routing, error handling middleware, and mock authentication for unit testing.
+    /// Provides isolated test environment without external dependencies.
+    ///
+    /// - Parameter storage: Mock storage backend to use for the test
+    /// - Returns: Configured Application instance ready for testing
     private func createTestApp(storage: MockStorage) -> some ApplicationProtocol {
         let controller = S3Controller(storage: storage)
 
@@ -148,6 +157,9 @@ struct S3ControllerTests {
 }
 
 // Mock authenticator for testing
+/// Test middleware that bypasses real authentication for unit tests.
+/// Automatically sets the principal to "test-user" for all requests.
+/// Allows controller logic testing without complex signature verification.
 struct MockAuthenticatorMiddleware: RouterMiddleware {
     typealias Context = S3RequestContext
 
