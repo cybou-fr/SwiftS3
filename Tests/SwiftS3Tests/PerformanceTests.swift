@@ -93,7 +93,7 @@ struct PerformanceTests {
                     uri: "/\(bucket)/\(key)",
                     method: .put,
                     headers: sign("PUT", "/\(bucket)/\(key)", body: smallContent),
-                    body: .string(smallContent)
+                    body: ByteBuffer(string: smallContent)
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -124,7 +124,7 @@ struct PerformanceTests {
                     uri: "/\(bucket)/\(key)",
                     method: .put,
                     headers: sign("PUT", "/\(bucket)/\(key)", body: mediumContent),
-                    body: .string(mediumContent)
+                    body: ByteBuffer(string: mediumContent)
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -162,7 +162,7 @@ struct PerformanceTests {
                     uri: "/\(bucket)/\(key)",
                     method: .put,
                     headers: sign("PUT", "/\(bucket)/\(key)", body: testContent),
-                    body: .string(testContent)
+                    body: ByteBuffer(string: testContent)
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -222,7 +222,7 @@ struct PerformanceTests {
                     uri: "/\(bucket)/\(key)",
                     method: .put,
                     headers: sign("PUT", "/\(bucket)/\(key)", body: content),
-                    body: .string(content)
+                    body: ByteBuffer(string: content)
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -306,7 +306,7 @@ struct PerformanceTests {
                             uri: "/\(bucket)/\(key)",
                             method: .put,
                             headers: self.sign("PUT", "/\(bucket)/\(key)", body: content),
-                            body: .string(content)
+                            body: ByteBuffer(string: content)
                         ) { response in
                             #expect(response.status == .ok)
                         }
@@ -450,7 +450,7 @@ struct PerformanceTests {
                 try await client.execute(
                     uri: "/memory-bucket/\(key)",
                     method: .put,
-                    body: .string(content)
+                    body: ByteBuffer(string: content)
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -471,5 +471,4 @@ struct PerformanceTests {
             }
         }
     }
-}</content>
-<parameter name="filePath">/Users/cybou/Documents/SwiftS3/Tests/SwiftS3Tests/PerformanceTests.swift
+}

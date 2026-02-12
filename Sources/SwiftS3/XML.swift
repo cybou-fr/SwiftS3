@@ -1,6 +1,9 @@
 import Foundation
 
+/// Utility struct for generating XML responses compatible with AWS S3 API.
+/// Provides static methods for creating XML documents for various S3 operations.
 struct XML {
+    /// Generates XML for listing all buckets owned by a user.
     static func listBuckets(buckets: [(name: String, created: Date)]) -> String {
         return XMLBuilder(root: "ListAllMyBucketsResult") {
             XMLBuilder.element("Buckets") {

@@ -4,6 +4,7 @@ import Hummingbird
 import Logging
 import NIO
 
+/// Configuration and initialization for the SwiftS3 server.
 struct S3Server {
     let hostname: String
     let port: Int
@@ -11,6 +12,7 @@ struct S3Server {
     let accessKey: String
     let secretKey: String
 
+    /// Starts the S3 server with the configured settings.
     func run() async throws {
         let logger = Logger(label: "SwiftS3")
 

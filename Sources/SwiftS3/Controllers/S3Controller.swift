@@ -73,6 +73,8 @@ struct S3MetricsMiddleware: RouterMiddleware {
     }
 }
 
+/// Main controller handling S3 API requests and responses.
+/// Routes incoming HTTP requests to appropriate storage operations.
 struct S3Controller {
     let storage: any StorageBackend
     let logger = Logger(label: "SwiftS3.S3")
@@ -80,6 +82,7 @@ struct S3Controller {
     let evaluator = PolicyEvaluator()
     let metrics = S3Metrics()
 
+    /// Registers all S3 API routes with the provided router.
     func addRoutes(to router: some Router<S3RequestContext>) {
         // List Buckets (Service)
         router.get(
@@ -146,6 +149,7 @@ struct S3Controller {
             })
     }
 
+    /// Handles GET / requests to list all buckets owned by the authenticated user.
     @Sendable func listBuckets(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -156,6 +160,8 @@ struct S3Controller {
             status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Handles PUT /:bucket requests to create a new bucket.
+    /// Supports various bucket configurations via query parameters (policy, acl, versioning, etc.).
     @Sendable func createBucket(request: Request, context: S3RequestContext) async throws
         -> Response
     {

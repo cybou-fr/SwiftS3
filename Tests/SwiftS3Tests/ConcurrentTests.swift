@@ -92,7 +92,7 @@ struct ConcurrentTests {
                             uri: "/\(bucket)/\(key)",
                             method: .put,
                             headers: self.sign("PUT", "/\(bucket)/\(key)", body: content),
-                            body: .string(content)
+                            body: ByteBuffer(string: content)
                         ) { response in
                             #expect(response.status == .ok)
                         }
@@ -139,7 +139,7 @@ struct ConcurrentTests {
                     uri: "/\(bucket)/\(key)",
                     method: .put,
                     headers: sign("PUT", "/\(bucket)/\(key)", body: content),
-                    body: .string(content)
+                    body: ByteBuffer(string: content)
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -194,7 +194,7 @@ struct ConcurrentTests {
                             uri: "/\(bucket)/\(key)",
                             method: .put,
                             headers: self.sign("PUT", "/\(bucket)/\(key)", body: content),
-                            body: .string(content)
+                            body: ByteBuffer(string: content)
                         ) { response in
                             #expect(response.status == .ok)
                         }
@@ -296,7 +296,7 @@ struct ConcurrentTests {
                             uri: "/\(bucket)/\(key)",
                             method: .put,
                             headers: self.sign("PUT", "/\(bucket)/\(key)", body: expectedContent),
-                            body: .string(expectedContent)
+                            body: ByteBuffer(string: expectedContent)
                         ) { response in
                             #expect(response.status == .ok)
                         }
@@ -389,7 +389,7 @@ struct ConcurrentTests {
                         try await client.execute(
                             uri: "/test-bucket/\(key)",
                             method: .put,
-                            body: .string(content)
+                            body: ByteBuffer(string: content)
                         ) { response in
                             #expect(response.status == .ok)
                         }
@@ -436,7 +436,7 @@ struct ConcurrentTests {
                         try await client.execute(
                             uri: "/stress-bucket/\(key)",
                             method: .put,
-                            body: .string(content)
+                            body: ByteBuffer(string: content)
                         ) { response in
                             #expect(response.status == .ok)
                         }
@@ -456,5 +456,4 @@ struct ConcurrentTests {
             }
         }
     }
-}</content>
-<parameter name="filePath">/Users/cybou/Documents/SwiftS3/Tests/SwiftS3Tests/ConcurrentTests.swift
+}

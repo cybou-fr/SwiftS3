@@ -90,7 +90,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)/\(key)",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)/\(key)", body: content),
-                body: .string(content)
+                body: ByteBuffer(string: content)
             ) { response in
                 #expect(response.status == .ok)
                 #expect(response.headers[.eTag] != nil)
@@ -232,7 +232,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)?policy",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)?policy", body: policy),
-                body: .string(policy)
+                body: ByteBuffer(string: policy)
             ) { response in
                 #expect(response.status == .noContent)
             }
@@ -278,7 +278,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)/\(key)",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)/\(key)", body: content),
-                body: .string(content)
+                body: ByteBuffer(string: content)
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -303,7 +303,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)/\(key)?tagging",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)/\(key)?tagging", body: tagsXML),
-                body: .string(tagsXML)
+                body: ByteBuffer(string: tagsXML)
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -348,7 +348,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)?versioning",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)?versioning", body: versioningXML),
-                body: .string(versioningXML)
+                body: ByteBuffer(string: versioningXML)
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -359,7 +359,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)/\(key)",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)/\(key)", body: content1),
-                body: .string(content1)
+                body: ByteBuffer(string: content1)
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -370,7 +370,7 @@ struct EndToEndIntegrationTests {
                 uri: "/\(bucket)/\(key)",
                 method: .put,
                 headers: sign("PUT", "/\(bucket)/\(key)", body: content2),
-                body: .string(content2)
+                body: ByteBuffer(string: content2)
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -387,5 +387,4 @@ struct EndToEndIntegrationTests {
             }
         }
     }
-}</content>
-<parameter name="filePath">/Users/cybou/Documents/SwiftS3/Tests/SwiftS3Tests/EndToEndIntegrationTests.swift
+}

@@ -52,7 +52,7 @@ struct ErrorPathTests {
 
         // Try to put object - should fail
         try await app.test(.router) { client in
-            try await client.execute(uri: "/test-bucket/test-object", method: .put, body: .string("test")) { response in
+            try await client.execute(uri: "/test-bucket/test-object", method: .put, body: ByteBuffer(string: "test")) { response in
                 #expect(response.status == .internalServerError)
             }
         }
@@ -77,7 +77,7 @@ struct ErrorPathTests {
                 #expect(response.status == .ok)
             }
 
-            try await client.execute(uri: "/test-bucket/test-object", method: .put, body: .string("test")) { response in
+            try await client.execute(uri: "/test-bucket/test-object", method: .put, body: ByteBuffer(string: "test")) { response in
                 #expect(response.status == .ok)
             }
         }
@@ -119,7 +119,7 @@ struct ErrorPathTests {
         """
 
         try await app.test(.router) { client in
-            try await client.execute(uri: "/test-bucket?policy", method: .put, body: .string(policy)) { response in
+            try await client.execute(uri: "/test-bucket?policy", method: .put, body: ByteBuffer(string: policy)) { response in
                 #expect(response.status == .internalServerError)
             }
         }
@@ -172,7 +172,7 @@ struct ErrorPathTests {
                 #expect(response.status == .ok)
             }
 
-            try await client.execute(uri: "/test-bucket/test-object", method: .put, body: .string("test")) { response in
+            try await client.execute(uri: "/test-bucket/test-object", method: .put, body: ByteBuffer(string: "test")) { response in
                 #expect(response.status == .ok)
             }
         }
@@ -190,7 +190,7 @@ struct ErrorPathTests {
         """
 
         try await app.test(.router) { client in
-            try await client.execute(uri: "/test-bucket/test-object?tagging", method: .put, body: .string(tagsXML)) { response in
+            try await client.execute(uri: "/test-bucket/test-object?tagging", method: .put, body: ByteBuffer(string: tagsXML)) { response in
                 #expect(response.status == .internalServerError)
             }
         }
@@ -272,7 +272,7 @@ struct ErrorPathTests {
         let largeData = String(repeating: "x", count: 1024 * 1024)
 
         try await app.test(.router) { client in
-            try await client.execute(uri: "/test-bucket/large-object", method: .put, body: .string(largeData)) { response in
+            try await client.execute(uri: "/test-bucket/large-object", method: .put, body: ByteBuffer(string: largeData)) { response in
                 #expect(response.status == .ok)
             }
 
@@ -335,7 +335,7 @@ struct ErrorPathTests {
                 #expect(response.status == .ok)
             }
 
-            try await client.execute(uri: "/test-bucket/range-test", method: .put, body: .string(testContent)) { response in
+            try await client.execute(uri: "/test-bucket/range-test", method: .put, body: ByteBuffer(string: testContent)) { response in
                 #expect(response.status == .ok)
             }
         }
@@ -358,9 +358,8 @@ struct ErrorPathTests {
             headers[.range] = "bytes=100-200"
 
             try await client.execute(uri: "/test-bucket/range-test", method: .get, headers: headers) { response in
-                #expect(response.status == .requestedRangeNotSatisfiable)
+                #expect(response.status == .rangeNotSatisfiable)
             }
         }
     }
-}</content>
-<parameter name="filePath">/Users/cybou/Documents/SwiftS3/Tests/SwiftS3Tests/ErrorPathTests.swift
+}

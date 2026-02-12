@@ -3,9 +3,12 @@ import HTTPTypes
 import Hummingbird
 import Logging
 
+/// Middleware for logging S3 API requests and responses.
+/// Records request method, path, response status, and timing information.
 struct S3RequestLogger<Context: RequestContext>: RouterMiddleware {
     let logger = Logger(label: "SwiftS3.Request")
 
+    /// Logs incoming requests and their responses with timing information.
     func handle(
         _ request: Input, context: Context,
         next: (Input, Context) async throws -> Output

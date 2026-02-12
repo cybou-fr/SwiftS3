@@ -1,5 +1,9 @@
 # SwiftS3
 
+[![Swift](https://img.shields.io/badge/Swift-6.0+-orange.svg)](https://swift.org)
+[![macOS](https://img.shields.io/badge/macOS-14.0+-blue.svg)](https://www.apple.com/macos/)
+[![Linux](https://img.shields.io/badge/Linux-Compatible-green.svg)](https://www.linux.org/)
+
 SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. Built on top of [Hummingbird](https://github.com/hummingbird-project/hummingbird), it provides a simple and efficient way to run a local S3-like service for development and testing purposes.
 
 ## Features
@@ -16,6 +20,16 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Checksum Verification**: Automatic SHA256/CRC32C checksum verification on upload and download.
 - **Lifecycle Management**: Periodical expiration of old objects based on bucket rules.
 - **Extensible Storage**: Modular architecture allowing for different storage backends and metadata stores.
+
+## Architecture
+
+SwiftS3 follows a modular architecture:
+
+- **Controllers**: Handle HTTP requests and responses for S3 API operations
+- **Storage Backend**: Abstract interface for object storage (currently file system based)
+- **Metadata Store**: Abstract interface for metadata persistence (currently SQLite based)
+- **Authentication**: AWS Signature V4 verification and user management
+- **Lifecycle Management**: Background process for object expiration and cleanup
 
 ## Supported Operations
 
@@ -72,6 +86,8 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 
 SwiftS3 is a Swift executable package. You can build and run it using the Swift Package Manager.
 
+### Clone and Build
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/cybou-fr/SwiftS3.git
@@ -83,9 +99,26 @@ SwiftS3 is a Swift executable package. You can build and run it using the Swift 
    swift build -c release
    ```
 
+3. Run the server:
+   ```bash
+   swift run SwiftS3
+   ```
+
+### Using Swift Package Manager
+
+You can also add SwiftS3 as a dependency to your own Swift project:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/cybou-fr/SwiftS3.git", from: "1.0.0")
+]
+```
+
 ## Usage
 
-To start the server, run the executable. By default, it binds to `127.0.0.1:8080`.
+### Basic Usage
+
+To start the server with default settings (binds to `127.0.0.1:8080`):
 
 ```bash
 swift run SwiftS3
@@ -109,16 +142,31 @@ Run the server on port `3000` with a custom storage directory:
 swift run SwiftS3 --port 3000 --storage /path/to/my/storage
 ```
 
+### User Management
+
+SwiftS3 includes a command-line interface for managing users:
+
+```bash
+# Create a new user
+swift run SwiftS3 user create myuser --access-key MYACCESSKEY --secret-key MYSECRETKEY
+
+# List all users
+swift run SwiftS3 user list
+
+# Delete a user
+swift run SwiftS3 user delete MYACCESSKEY
+```
+
 ## Authentication
 
 SwiftS3 enforces AWS Signature V4 authentication.
 
-**Default Credentials (MVP):**
+**Default Credentials (for development):**
 - **Access Key ID**: `admin`
 - **Secret Access Key**: `password`
 - **Region**: `us-east-1` (or any valid region string)
 
-Users are stored in the SQLite metadata database (`users` table). You can manage users programmatically via the `UserStore` interface (API endpoints for user management are planned).
+Users are stored in the SQLite metadata database (`users` table). You can manage users programmatically via the `UserStore` interface.
 
 ### Example with AWS CLI
 
@@ -142,6 +190,91 @@ Upload a file:
 aws s3 cp myfile.txt s3://mybucket/myfile.txt --endpoint-url http://localhost:8080
 ```
 
+Download a file:
+
+```bash
+aws s3 cp s3://mybucket/myfile.txt downloaded.txt --endpoint-url http://localhost:8080
+```
+
+Create a bucket:
+
+```bash
+aws s3 mb s3://mybucket --endpoint-url http://localhost:8080
+```
+
+### Example with MinIO Client (mc)
+
+```bash
+# Configure host
+mc alias set swiftS3 http://localhost:8080 admin password
+
+# List buckets
+mc ls swiftS3
+
+# Upload file
+mc cp myfile.txt swiftS3/mybucket/
+```
+
+## Testing
+
+SwiftS3 includes a comprehensive test suite. To run the tests:
+
+```bash
+swift test
+```
+
+The test suite covers:
+- Unit tests for individual components
+- Integration tests for end-to-end S3 API compatibility
+- Performance benchmarks
+- Concurrent operation testing
+- Error path testing
+
+## Development
+
+### Project Structure
+
+```
+Sources/
+├── SwiftS3/
+│   ├── Controllers/          # HTTP request handlers
+│   ├── Storage/             # Storage backend implementations
+│   ├── Auth/                # Authentication and authorization
+│   ├── XML.swift            # XML response generation
+│   ├── XMLBuilder.swift     # XML construction utilities
+│   └── *.swift              # Core server components
+Tests/
+└── SwiftS3Tests/            # Test suite
+```
+
+### Key Components
+
+- **S3Controller**: Main request router and handler
+- **StorageBackend**: Protocol for storage implementations
+- **MetadataStore**: Protocol for metadata persistence
+- **S3Authenticator**: AWS Signature V4 verification
+- **LifecycleJanitor**: Background cleanup process
+
 ## Contributing
 
 Contributions are welcome! Please feel free to open issues or submit pull requests.
+
+### Development Setup
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests for new functionality
+5. Ensure all tests pass: `swift test`
+6. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- [Hummingbird](https://github.com/hummingbird-project/hummingbird) - The web framework
+- [SwiftNIO](https://github.com/apple/swift-nio) - Networking library
+- [SQLiteNIO](https://github.com/vapor/sqlite-nio) - SQLite database driver
+- AWS S3 API documentation for compatibility reference

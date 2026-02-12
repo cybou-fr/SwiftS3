@@ -5,6 +5,8 @@ import Logging
 import NIO
 import SQLiteNIO
 
+/// Main command-line interface for SwiftS3 Object Storage Server.
+/// Provides commands to start the server and manage users.
 @main
 struct SwiftS3: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -14,6 +16,7 @@ struct SwiftS3: AsyncParsableCommand {
     )
 }
 
+/// Command to start the S3 server.
 struct ServerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "server")
 
@@ -56,6 +59,7 @@ struct ServerCommand: AsyncParsableCommand {
     }
 }
 
+/// Command to manage users in the S3 server.
 struct UserCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "user",

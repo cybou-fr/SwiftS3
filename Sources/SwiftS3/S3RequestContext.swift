@@ -3,9 +3,12 @@ import Hummingbird
 import Logging
 import NIO
 
+/// Request context for S3 API operations, extending Hummingbird's RequestContext.
+/// Provides access to request-specific data and authenticated principal information.
 @dynamicMemberLookup
 struct S3RequestContext: RequestContext {
     var coreContext: CoreRequestContextStorage
+    /// The authenticated principal (access key) for the current request.
     var principal: String?
 
     init(source: Source) {

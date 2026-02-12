@@ -1,5 +1,7 @@
 import Hummingbird
 
+/// Represents an S3 API error with a specific error code, message, and HTTP status.
+/// Provides XML serialization for error responses.
 struct S3Error: Error, @unchecked Sendable, Equatable {
     let code: String
     let message: String
