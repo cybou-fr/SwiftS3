@@ -15,27 +15,30 @@ This document outlines the roadmap to elevate SwiftS3 to modern standards, lever
 
 - [x] **Multi-User Identity**: Support multiple users via SQLite database.
 - [x] **Bucket Policies**: Implement JSON-based IAM policies for granular bucket/prefix access control.
-- [ ] **ACLs**: Support basic Canned ACLs (private, public-read).
+- [x] **ACLs**: Support basic Canned ACLs (private, public-read).
 - [x] **Signatures**: Verify `x-amz-content-sha256` payload checksums (currently only signature header is checked).
 
 ## 3. S3 Feature Parity (Compatibility)
 **Goal:** Support the "Standard" S3 feature set expected by SDKs (boto3, AWS JS SDK).
 
-- [ ] **Versioning**: Support object versioning (keeping multiple variants of an object).
-- [ ] **Tagging**: Object and Bucket tagging support.
-- [ ] **Lifecycle Rules**: Auto-deletion or transition of objects (TTL).
-- [ ] **Presigned URLs**: Ensure compatibility with presigned URL generation.
+- [x] **Versioning**: Support object versioning (keeping multiple variants of an object).
+- [x] **Tagging**: Object and Bucket tagging support.
+- [/] **Lifecycle Rules**: Expiration (Days) implemented. Next: Noncurrent version expiration, pagination for large buckets, and Prefix/Tag filtering improvements.
+- [x] **Presigned URLs**: Full support for query-parameter based authentication.
+- [ ] **MFA Delete**: Support Multi-Factor Authentication for sensitive operations.
 
 ## 4. Reliability & Operations
 **Goal:** Production readiness.
 
 - [x] **Structured Logging**: JSON logs for observability.
 - [ ] **Metrics**: Prometheus-compatible metrics endpoint (RPS, Latency, Storage usage).
-- [x] **checksum Verification**: Implement CRC32C/SHA256 checksums on upload/download.
+- [x] **Checksum Verification**: Implement CRC32C/SHA256 checksums on upload/download.
+- [ ] **Garbage Collection**: Cleanup of orphaned files or failed multipart uploads (Janitor expansion).
 
 ## 5. Development Workflow Improvements
 **Goal:** Ensure faster iteration cycles and better testing.
 
 - [x] **Unit Tests**: Coverage for edge cases (`FileSystemStorage` logic).
 - [x] **Integration Tests**: Tests for real S3 client validation using `HummingbirdTesting`.
+- [/] **E2E Tests**: Validate with real AWS CLI and S3 SDKs (ongoing).
 ---

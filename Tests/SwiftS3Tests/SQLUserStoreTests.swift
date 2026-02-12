@@ -56,7 +56,7 @@ final class SQLUserStoreTests: XCTestCase {
             // Check get user
             let admin = try await store.getUser(accessKey: "admin")
             XCTAssertNotNil(admin)
-            XCTAssertEqual(admin?.secretKey, "admin")
+            XCTAssertEqual(admin?.secretKey, "password")
         }
     }
 

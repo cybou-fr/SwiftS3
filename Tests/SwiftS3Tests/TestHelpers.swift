@@ -3,6 +3,8 @@ import Foundation
 import HTTPTypes
 import Hummingbird
 import HummingbirdTesting
+import NIO
+import SQLiteNIO
 
 @testable import SwiftS3
 
@@ -132,4 +134,55 @@ struct AWSAuthHelper {
         let auth = HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: key))
         return Data(auth)
     }
+}
+
+/// Global test helper to set up a SwiftS3 application for testing
+func withApp(
+    users: [(accessKey: String, secretKey: String)] = [],
+    _ test: @escaping @Sendable (any TestClientProtocol, SQLMetadataStore) async throws -> Void
+) async throws {
+    let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    let threadPool = NIOThreadPool(numberOfThreads: 2)
+    threadPool.start()
+
+    let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
+        UUID().uuidString
+    ).path
+    try? FileManager.default.createDirectory(atPath: storagePath, withIntermediateDirectories: true)
+
+    let metadataStore = try await SQLMetadataStore.create(
+        path: storagePath + "/metadata.sqlite",
+        on: elg,
+        threadPool: threadPool
+    )
+
+    // Seed users
+    for user in users {
+        try await metadataStore.createUser(
+            username: "User-\(user.accessKey)", accessKey: user.accessKey, secretKey: user.secretKey
+        )
+    }
+
+    let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+    let controller = S3Controller(storage: storage)
+
+    let router = Router(context: S3RequestContext.self)
+    router.middlewares.add(S3ErrorMiddleware())
+    router.middlewares.add(S3Authenticator(userStore: metadataStore))
+    controller.addRoutes(to: router)
+
+    let app = Application(
+        router: router,
+        configuration: .init(address: .hostname("127.0.0.1", port: 0)),
+        eventLoopGroupProvider: .shared(elg)
+    )
+
+    try await app.test(.router) { client in
+        try await test(client, metadataStore)
+    }
+
+    try? await metadataStore.shutdown()
+    try? await threadPool.shutdownGracefully()
+    try? await elg.shutdownGracefully()
+    try? FileManager.default.removeItem(atPath: storagePath)
 }

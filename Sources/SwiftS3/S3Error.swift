@@ -1,6 +1,6 @@
 import Hummingbird
 
-struct S3Error: Error {
+struct S3Error: Error, @unchecked Sendable, Equatable {
     let code: String
     let message: String
     let statusCode: HTTPResponse.Status
@@ -74,6 +74,26 @@ struct S3Error: Error {
 
     static let malformedPolicy = S3Error(
         code: "MalformedPolicy", message: "Policy has invalid resource", statusCode: .badRequest)
+
+    static let notImplemented = S3Error(
+        code: "NotImplemented",
+        message: "A header you provided implies functionality that is not implemented",
+        statusCode: .notImplemented)
+
+    static let invalidArgument = S3Error(
+        code: "InvalidArgument",
+        message: "Invalid Argument",
+        statusCode: .badRequest)
+
+    static let expiredToken = S3Error(
+        code: "ExpiredToken",
+        message: "The provided token has expired.",
+        statusCode: .forbidden)
+
+    static let noSuchLifecycleConfiguration = S3Error(
+        code: "NoSuchLifecycleConfiguration",
+        message: "The lifecycle configuration does not exist.",
+        statusCode: .notFound)
 }
 
 extension S3Error: ResponseGenerator {

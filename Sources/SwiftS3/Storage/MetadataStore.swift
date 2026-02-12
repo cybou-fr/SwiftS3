@@ -4,13 +4,14 @@ import NIO
 /// Protocol defining metadata operations for S3 objects
 protocol MetadataStore: Sendable {
     /// Retrieve metadata for an object
-    func getMetadata(bucket: String, key: String) async throws -> ObjectMetadata
+    func getMetadata(bucket: String, key: String, versionId: String?) async throws -> ObjectMetadata
 
+    /// Save metadata for an object
     /// Save metadata for an object
     func saveMetadata(bucket: String, key: String, metadata: ObjectMetadata) async throws
 
     /// Delete metadata for an object
-    func deleteMetadata(bucket: String, key: String) async throws
+    func deleteMetadata(bucket: String, key: String, versionId: String?) async throws
 
     /// List objects in a bucket
     func listObjects(
@@ -19,6 +20,35 @@ protocol MetadataStore: Sendable {
     ) async throws -> ListObjectsResult
 
     func shutdown() async throws
+
+    // ACLs
+    func getACL(bucket: String, key: String?, versionId: String?) async throws
+        -> AccessControlPolicy
+    func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
+        async throws
+
+    // Versioning
+    func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration?
+    func setBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws
+
+    func listObjectVersions(
+        bucket: String, prefix: String?, delimiter: String?, keyMarker: String?,
+        versionIdMarker: String?, maxKeys: Int?
+    ) async throws -> ListVersionsResult
+
+    // Lifecycle
+    func createBucket(name: String, owner: String) async throws
+    func deleteBucket(name: String) async throws
+
+    // Tagging
+    func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag]
+    func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws
+    func deleteTags(bucket: String, key: String?, versionId: String?) async throws
+
+    // Lifecycle
+    func getLifecycle(bucket: String) async throws -> LifecycleConfiguration?
+    func putLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws
+    func deleteLifecycle(bucket: String) async throws
 }
 
 /// Default implementation storing metadata in sidecar JSON files
@@ -33,7 +63,8 @@ struct FileSystemMetadataStore: MetadataStore {
         return "\(rootPath)/\(bucket)/\(key)"
     }
 
-    func getMetadata(bucket: String, key: String) async throws -> ObjectMetadata {
+    func getMetadata(bucket: String, key: String, versionId: String?) async throws -> ObjectMetadata
+    {
         let path = getObjectPath(bucket: bucket, key: key)
         let metaPath = path + ".metadata"
 
@@ -64,7 +95,10 @@ struct FileSystemMetadataStore: MetadataStore {
             lastModified: date,
             eTag: nil,  // ETag generation/storage can be improved later
             contentType: contentType,
-            customMetadata: customMetadata
+            customMetadata: customMetadata,
+            versionId: "null",
+            isLatest: true,
+            isDeleteMarker: false
         )
     }
 
@@ -82,7 +116,7 @@ struct FileSystemMetadataStore: MetadataStore {
         try data.write(to: URL(fileURLWithPath: metaPath))
     }
 
-    func deleteMetadata(bucket: String, key: String) async throws {
+    func deleteMetadata(bucket: String, key: String, versionId: String?) async throws {
         let path = getObjectPath(bucket: bucket, key: key)
         let metaPath = path + ".metadata"
 
@@ -220,5 +254,142 @@ struct FileSystemMetadataStore: MetadataStore {
 
     func shutdown() async throws {
         // No-op for file system store
+    }
+
+    func getACL(bucket: String, key: String?, versionId: String?) async throws
+        -> AccessControlPolicy
+    {
+        let path: String
+        if let key = key {
+            path = getObjectPath(bucket: bucket, key: key) + ".acl"
+        } else {
+            path = bucketPath(bucket) + "/.bucket_acl"
+        }
+
+        guard FileManager.default.fileExists(atPath: path),
+            let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+            let acl = try? JSONDecoder().decode(AccessControlPolicy.self, from: data)
+        else {
+            // Default to private if no ACL exists
+            // For now, we return a dummy or throw. S3 defaults to private (owner full control).
+            // We need the owner ID to create a default ACL.
+            // Since we don't track owner in FS store easily without sidecars, we might throw or return a default.
+            // Let's return a default "unknown" owner for now or throw.
+            // Better: throw no such ACL or return a default logic in Controller if not found.
+            // Standard S3 behaviour: every object has an ACL.
+            // We will throw specific error so Controller can generate default.
+            throw S3Error.noSuchKey  // Or similar
+        }
+        return acl
+    }
+
+    func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
+        async throws
+    {
+        let path: String
+        if let key = key {
+            path = getObjectPath(bucket: bucket, key: key) + ".acl"
+        } else {
+            path = bucketPath(bucket) + "/.bucket_acl"
+        }
+
+        let data = try JSONEncoder().encode(acl)
+        try data.write(to: URL(fileURLWithPath: path))
+    }
+
+    // MARK: - Versioning
+
+    func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration? {
+        let path = bucketPath(bucket) + "/versioning.json"
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            return VersioningConfiguration(status: .suspended)
+        }
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try JSONDecoder().decode(VersioningConfiguration.self, from: data)
+    }
+
+    func setBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws {
+        let path = bucketPath(bucket) + "/versioning.json"
+        let data = try JSONEncoder().encode(configuration)
+        try data.write(to: URL(fileURLWithPath: path))
+    }
+
+    func createBucket(name: String, owner: String) async throws {
+        // Create sidecar for bucket metadata (owner)
+        let path = bucketPath(name)
+        // We assume directory exists or will be created by Storage
+        // But we need to write .bucket_metadata
+        // If directory doesn't exist, this fails.
+        // FileSystemStorage should create directory first.
+        // We will just write the file.
+        let metaPath = path + "/.bucket_metadata"
+        let metadata = ["owner": owner]
+        let data = try JSONEncoder().encode(metadata)
+        try data.write(to: URL(fileURLWithPath: metaPath))
+    }
+
+    func deleteBucket(name: String) async throws {
+        let path = bucketPath(name) + "/.bucket_metadata"
+        if FileManager.default.fileExists(atPath: path) {
+            try FileManager.default.removeItem(atPath: path)
+        }
+        let aclPath = bucketPath(name) + "/.bucket_acl"
+        if FileManager.default.fileExists(atPath: aclPath) {
+            try FileManager.default.removeItem(atPath: aclPath)
+        }
+    }
+
+    func listObjectVersions(
+        bucket: String, prefix: String?, delimiter: String?, keyMarker: String?,
+        versionIdMarker: String?, maxKeys: Int?
+    ) async throws -> ListVersionsResult {
+        // FS Store doesn't support real versioning yet, so we just list objects as latest versions
+        let objectsResult = try await listObjects(
+            bucket: bucket, prefix: prefix, delimiter: delimiter, marker: keyMarker,
+            continuationToken: nil, maxKeys: maxKeys)
+
+        let versions = objectsResult.objects.map { obj in
+            ObjectMetadata(
+                key: obj.key, size: obj.size, lastModified: obj.lastModified, eTag: obj.eTag,
+                contentType: obj.contentType, customMetadata: obj.customMetadata, owner: obj.owner,
+                versionId: "null", isLatest: true, isDeleteMarker: false)
+        }
+
+        return ListVersionsResult(
+            versions: versions,
+            commonPrefixes: objectsResult.commonPrefixes,
+            isTruncated: objectsResult.isTruncated,
+            nextKeyMarker: objectsResult.nextMarker,
+            nextVersionIdMarker: nil
+        )
+    }
+
+    // Tagging (No-op or partial for FS)
+    func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag] {
+        return []
+    }
+
+    func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws {
+        // No-op for now in FS store
+    }
+
+    func deleteTags(bucket: String, key: String?, versionId: String?) async throws {
+        // No-op
+    }
+
+    // MARK: - Lifecycle
+
+    func getLifecycle(bucket: String) async throws -> LifecycleConfiguration? {
+        return nil
+    }
+
+    func putLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws {
+        // Not implemented for FileSystem
+    }
+
+    func deleteLifecycle(bucket: String) async throws {
+        // Not implemented for FileSystem
     }
 }

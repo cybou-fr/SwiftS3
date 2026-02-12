@@ -33,6 +33,10 @@ struct S3Server {
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
         let controller = S3Controller(storage: storage)
 
+        // Start Lifecycle Janitor
+        let janitor = LifecycleJanitor(storage: storage, interval: .seconds(60))  // Check every 60 seconds for demo/testing
+        await janitor.start()
+
         let router = Router(context: S3RequestContext.self)
         router.middlewares.add(S3RequestLogger())
         router.middlewares.add(S3ErrorMiddleware())
@@ -52,22 +56,9 @@ struct S3Server {
         try await app.runService()
 
         logger.info("Shutting down")
+        await janitor.stop()
         try await metadataStore.shutdown()
         try await threadPool.shutdownGracefully()
         try await elg.shutdownGracefully()
-    }
-}
-
-extension NIOThreadPool {
-    func shutdownGracefully() async throws {
-        return try await withCheckedThrowingContinuation { continuation in
-            self.shutdownGracefully { error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
     }
 }

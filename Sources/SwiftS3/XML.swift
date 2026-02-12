@@ -231,6 +231,317 @@ struct XML {
         }
         return keys
     }
+    static func accessControlPolicy(policy: AccessControlPolicy) -> String {
+        return XMLBuilder(
+            root: "AccessControlPolicy",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            var xml = ""
+            xml += XMLBuilder.element("Owner") {
+                var ownerXML = ""
+                ownerXML += XMLBuilder.element("ID", policy.owner.id)
+                if let displayName = policy.owner.displayName {
+                    ownerXML += XMLBuilder.element("DisplayName", displayName)
+                }
+                return ownerXML
+            }
+
+            xml += XMLBuilder.element("AccessControlList") {
+                policy.accessControlList.map { grant in
+                    XMLBuilder.element("Grant") {
+                        var granteeAttrs: [String: String] = [
+                            "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance"
+                        ]
+
+                        // Map type to xsi:type
+                        if grant.grantee.type == "CanonicalUser" {
+                            granteeAttrs["xsi:type"] = "CanonicalUser"
+                        } else if grant.grantee.type == "Group" {
+                            granteeAttrs["xsi:type"] = "Group"
+                        } else {
+                            granteeAttrs["xsi:type"] = grant.grantee.type  // Fallback
+                        }
+
+                        return XMLBuilder.element("Grantee", attributes: granteeAttrs) {
+                            var inner = ""
+                            if let id = grant.grantee.id {
+                                inner += XMLBuilder.element("ID", id)
+                            }
+                            if let name = grant.grantee.displayName {
+                                inner += XMLBuilder.element("DisplayName", name)
+                            }
+                            if let uri = grant.grantee.uri {
+                                inner += XMLBuilder.element("URI", uri)
+                            }
+                            return inner
+                        }
+                            + XMLBuilder.element("Permission", grant.permission.rawValue)
+                    }
+                }.joined()
+            }
+            return xml
+        }.content
+    }
+    static func versioningConfiguration(config: VersioningConfiguration?) -> String {
+        return XMLBuilder(
+            root: "VersioningConfiguration",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            if let config = config {
+                return XMLBuilder.element("Status", config.status.rawValue)
+            } else {
+                return XMLBuilder.element(
+                    "Status", VersioningConfiguration.Status.suspended.rawValue)
+            }
+        }.content
+    }
+    static func listVersionsResult(
+        bucket: String, result: ListVersionsResult, prefix: String?, delimiter: String?,
+        keyMarker: String?,
+        versionIdMarker: String?, maxKeys: Int?
+    ) -> String {
+        return XMLBuilder(
+            root: "ListVersionsResult",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            var xml = ""
+            xml += XMLBuilder.element("Name", bucket)
+            xml += XMLBuilder.element("Prefix", prefix ?? "")
+            xml += XMLBuilder.element("KeyMarker", keyMarker ?? "")
+            xml += XMLBuilder.element("VersionIdMarker", versionIdMarker ?? "")
+            xml += XMLBuilder.element("MaxKeys", String(maxKeys ?? 1000))
+            if let delimiter = delimiter {
+                xml += XMLBuilder.element("Delimiter", delimiter)
+            }
+            xml += XMLBuilder.element("IsTruncated", String(result.isTruncated))
+
+            if let nextKeyMarker = result.nextKeyMarker {
+                xml += XMLBuilder.element("NextKeyMarker", nextKeyMarker)
+            }
+            if let nextVersionIdMarker = result.nextVersionIdMarker {
+                xml += XMLBuilder.element("NextVersionIdMarker", nextVersionIdMarker)
+            }
+
+            xml += result.versions.map { version in
+                let lastModified = ISO8601DateFormatter().string(from: version.lastModified)
+                let ownerXML = XMLBuilder.element("Owner") {
+                    XMLBuilder.element("ID", version.owner ?? "")
+                        + XMLBuilder.element("DisplayName", version.owner ?? "")
+                }
+
+                if version.isDeleteMarker {
+                    return XMLBuilder.element("DeleteMarker") {
+                        XMLBuilder.element("Key", version.key)
+                            + XMLBuilder.element("VersionId", version.versionId)
+                            + XMLBuilder.element("IsLatest", String(version.isLatest))
+                            + XMLBuilder.element("LastModified", lastModified)
+                            + ownerXML
+                    }
+                } else {
+                    return XMLBuilder.element("Version") {
+                        XMLBuilder.element("Key", version.key)
+                            + XMLBuilder.element("VersionId", version.versionId)
+                            + XMLBuilder.element("IsLatest", String(version.isLatest))
+                            + XMLBuilder.element("LastModified", lastModified)
+                            + XMLBuilder.element("ETag", "\"\(version.eTag ?? "")\"")
+                            + XMLBuilder.element("Size", String(version.size))
+                            + XMLBuilder.element("StorageClass", "STANDARD")
+                            + ownerXML
+                    }
+                }
+            }.joined()
+
+            xml += result.commonPrefixes.map { prefix in
+                XMLBuilder.element("CommonPrefixes") {
+                    XMLBuilder.element("Prefix", prefix)
+                }
+            }.joined()
+
+            return xml
+        }.content
+    }
+
+    static func taggingConfiguration(tags: [S3Tag]) -> String {
+        return XMLBuilder(
+            root: "Tagging",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            XMLBuilder.element("TagSet") {
+                tags.map { tag in
+                    XMLBuilder.element("Tag") {
+                        XMLBuilder.element("Key", tag.key) + XMLBuilder.element("Value", tag.value)
+                    }
+                }.joined()
+            }
+        }.content
+    }
+
+    static func parseTagging(xml: String) -> [S3Tag] {
+        var tags: [S3Tag] = []
+        let tagPattern = "<Tag>(.*?)</Tag>"
+        let keyPattern = "<Key>(.*?)</Key>"
+        let valuePattern = "<Value>(.*?)</Value>"
+
+        let tagRegex = try! NSRegularExpression(
+            pattern: tagPattern, options: [.dotMatchesLineSeparators])
+        let keyRegex = try! NSRegularExpression(pattern: keyPattern, options: [])
+        let valueRegex = try! NSRegularExpression(pattern: valuePattern, options: [])
+
+        let nsString = xml as NSString
+        let matches = tagRegex.matches(
+            in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for match in matches {
+            let tagContent = nsString.substring(with: match.range(at: 1))
+            let tagNsString = tagContent as NSString
+
+            var key = ""
+            var value = ""
+
+            if let keyMatch = keyRegex.firstMatch(
+                in: tagContent, options: [],
+                range: NSRange(location: 0, length: tagNsString.length))
+            {
+                key = tagNsString.substring(with: keyMatch.range(at: 1))
+            }
+
+            if let valueMatch = valueRegex.firstMatch(
+                in: tagContent, options: [],
+                range: NSRange(location: 0, length: tagNsString.length))
+            {
+                value = tagNsString.substring(with: valueMatch.range(at: 1))
+            }
+
+            if !key.isEmpty {
+                tags.append(S3Tag(key: key, value: value))
+            }
+        }
+
+        return tags
+    }
+
+    // MARK: - Lifecycle
+
+    static func lifecycleConfiguration(config: LifecycleConfiguration) -> String {
+        return XMLBuilder(
+            root: "LifecycleConfiguration",
+            attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
+        ) {
+            config.rules.map { rule in
+                XMLBuilder.element("Rule") {
+                    var ruleXML = ""
+                    if let id = rule.id {
+                        ruleXML += XMLBuilder.element("ID", id)
+                    }
+                    ruleXML += XMLBuilder.element("Filter") {
+                        XMLBuilder.element("Prefix", rule.filter.prefix ?? "")
+                    }
+                    ruleXML += XMLBuilder.element("Status", rule.status.rawValue)
+                    if let expiration = rule.expiration {
+                        ruleXML += XMLBuilder.element("Expiration") {
+                            var expXML = ""
+                            if let days = expiration.days {
+                                expXML += XMLBuilder.element("Days", String(days))
+                            }
+                            if let date = expiration.date {
+                                let dateString = ISO8601DateFormatter().string(from: date)
+                                expXML += XMLBuilder.element("Date", dateString)
+                            }
+                            if let deleteMarker = expiration.expiredObjectDeleteMarker {
+                                expXML += XMLBuilder.element(
+                                    "ExpiredObjectDeleteMarker", String(deleteMarker))
+                            }
+                            return expXML
+                        }
+                    }
+                    return ruleXML
+                }
+            }.joined()
+        }.content
+    }
+
+    static func parseLifecycle(xml: String) -> LifecycleConfiguration {
+        var rules: [LifecycleConfiguration.Rule] = []
+
+        let rulePattern = "<Rule>(.*?)</Rule>"
+        let idPattern = "<ID>(.*?)</ID>"
+        let statusPattern = "<Status>(.*?)</Status>"
+        let prefixPattern = "<Prefix>(.*?)</Prefix>"
+        let expirationPattern = "<Expiration>(.*?)</Expiration>"
+        let daysPattern = "<Days>(\\d+)</Days>"
+
+        let ruleRegex = try! NSRegularExpression(
+            pattern: rulePattern, options: [.dotMatchesLineSeparators])
+        let idRegex = try! NSRegularExpression(pattern: idPattern, options: [])
+        let statusRegex = try! NSRegularExpression(pattern: statusPattern, options: [])
+        let prefixRegex = try! NSRegularExpression(pattern: prefixPattern, options: [])
+        let expirationRegex = try! NSRegularExpression(
+            pattern: expirationPattern, options: [.dotMatchesLineSeparators])
+        let daysRegex = try! NSRegularExpression(pattern: daysPattern, options: [])
+
+        let nsString = xml as NSString
+        let matches = ruleRegex.matches(
+            in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for match in matches {
+            let ruleContent = nsString.substring(with: match.range(at: 1))
+            let ruleNsString = ruleContent as NSString
+
+            var id: String? = nil
+            if let idMatch = idRegex.firstMatch(
+                in: ruleContent, options: [],
+                range: NSRange(location: 0, length: ruleNsString.length))
+            {
+                id = ruleNsString.substring(with: idMatch.range(at: 1))
+            }
+
+            var status: LifecycleConfiguration.Rule.Status = .enabled
+            if let statusMatch = statusRegex.firstMatch(
+                in: ruleContent, options: [],
+                range: NSRange(location: 0, length: ruleNsString.length)),
+                let s = LifecycleConfiguration.Rule.Status(
+                    rawValue: ruleNsString.substring(with: statusMatch.range(at: 1)))
+            {
+                status = s
+            }
+
+            var prefix: String? = nil
+            if let prefixMatch = prefixRegex.firstMatch(
+                in: ruleContent, options: [],
+                range: NSRange(location: 0, length: ruleNsString.length))
+            {
+                prefix = ruleNsString.substring(with: prefixMatch.range(at: 1))
+            }
+
+            var expiration: LifecycleConfiguration.Rule.Expiration? = nil
+            if let expMatch = expirationRegex.firstMatch(
+                in: ruleContent, options: [],
+                range: NSRange(location: 0, length: ruleNsString.length))
+            {
+                let expContent = ruleNsString.substring(with: expMatch.range(at: 1))
+                let expNsString = expContent as NSString
+
+                var days: Int? = nil
+                if let daysMatch = daysRegex.firstMatch(
+                    in: expContent, options: [],
+                    range: NSRange(location: 0, length: expNsString.length))
+                {
+                    days = Int(expNsString.substring(with: daysMatch.range(at: 1)))
+                }
+                expiration = LifecycleConfiguration.Rule.Expiration(days: days)
+            }
+
+            rules.append(
+                LifecycleConfiguration.Rule(
+                    id: id,
+                    status: status,
+                    filter: LifecycleConfiguration.Rule.Filter(prefix: prefix),
+                    expiration: expiration
+                ))
+        }
+
+        return LifecycleConfiguration(rules: rules)
+    }
 }
 
 // Helper to expose private content property from XMLBuilder because I defined it private but need it here.

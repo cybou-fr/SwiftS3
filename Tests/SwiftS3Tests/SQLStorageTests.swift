@@ -51,17 +51,21 @@ final class SQLStorageTests: XCTestCase {
 
     func testStorageListObjectsPagination() async throws {
         try await withSQLStorage { storage in
-            try await storage.createBucket(name: "list-bucket")
+            try await storage.createBucket(name: "list-bucket", owner: "test-owner")
 
             let data = ByteBuffer(string: ".")
             _ = try await storage.putObject(
-                bucket: "list-bucket", key: "a/1.txt", data: [data].async, size: 1, metadata: nil)
+                bucket: "list-bucket", key: "a/1.txt", data: [data].async, size: 1, metadata: nil,
+                owner: "test-owner")
             _ = try await storage.putObject(
-                bucket: "list-bucket", key: "a/2.txt", data: [data].async, size: 1, metadata: nil)
+                bucket: "list-bucket", key: "a/2.txt", data: [data].async, size: 1, metadata: nil,
+                owner: "test-owner")
             _ = try await storage.putObject(
-                bucket: "list-bucket", key: "b/1.txt", data: [data].async, size: 1, metadata: nil)
+                bucket: "list-bucket", key: "b/1.txt", data: [data].async, size: 1, metadata: nil,
+                owner: "test-owner")
             _ = try await storage.putObject(
-                bucket: "list-bucket", key: "c.txt", data: [data].async, size: 1, metadata: nil)
+                bucket: "list-bucket", key: "c.txt", data: [data].async, size: 1, metadata: nil,
+                owner: "test-owner")
 
             // 1. Prefix
             let res1 = try await storage.listObjects(
@@ -86,18 +90,18 @@ final class SQLStorageTests: XCTestCase {
 
     func testStorageCopyObject() async throws {
         try await withSQLStorage { storage in
-            try await storage.createBucket(name: "src-bucket")
-            try await storage.createBucket(name: "dst-bucket")
+            try await storage.createBucket(name: "src-bucket", owner: "test-owner")
+            try await storage.createBucket(name: "dst-bucket", owner: "test-owner")
 
             let data = ByteBuffer(string: "Copy Me")
             let metadata = ["x-amz-meta-original": "true"]
             _ = try await storage.putObject(
                 bucket: "src-bucket", key: "source.txt", data: [data].async,
-                size: Int64(data.readableBytes), metadata: metadata)
+                size: Int64(data.readableBytes), metadata: metadata, owner: "test-owner")
 
             let copyMeta = try await storage.copyObject(
                 fromBucket: "src-bucket", fromKey: "source.txt", toBucket: "dst-bucket",
-                toKey: "copied.txt")
+                toKey: "copied.txt", owner: "test-owner")
 
             XCTAssertEqual(copyMeta.key, "copied.txt")
             XCTAssertEqual(copyMeta.customMetadata["x-amz-meta-original"], "true")
@@ -106,7 +110,7 @@ final class SQLStorageTests: XCTestCase {
 
     func testStorageCreateDeleteBucket() async throws {
         try await withSQLStorage { storage in
-            try await storage.createBucket(name: "test-bucket")
+            try await storage.createBucket(name: "test-bucket", owner: "test-owner")
             let result = try await storage.listObjects(
                 bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil,
                 continuationToken: nil, maxKeys: nil)
@@ -120,15 +124,15 @@ final class SQLStorageTests: XCTestCase {
 
     func testStoragePutGetObject() async throws {
         try await withSQLStorage { storage in
-            try await storage.createBucket(name: "test-bucket")
+            try await storage.createBucket(name: "test-bucket", owner: "test-owner")
             let data = Data("Hello, SQL!".utf8)
             let buffer = ByteBuffer(bytes: data)
             _ = try await storage.putObject(
                 bucket: "test-bucket", key: "hello.txt", data: [buffer].async,
-                size: Int64(data.count), metadata: nil)
+                size: Int64(data.count), metadata: nil, owner: "test-owner")
 
             let (metadata, body) = try await storage.getObject(
-                bucket: "test-bucket", key: "hello.txt", range: nil)
+                bucket: "test-bucket", key: "hello.txt", versionId: nil, range: nil)
             XCTAssertEqual(metadata.size, Int64(data.count))
 
             var receivedData = Data()
@@ -143,18 +147,55 @@ final class SQLStorageTests: XCTestCase {
 
     func testStorageMetadata() async throws {
         try await withSQLStorage { storage in
-            try await storage.createBucket(name: "meta-bucket")
+            try await storage.createBucket(name: "meta-bucket", owner: "test-owner")
             let data = ByteBuffer(string: "Hello Metadata")
             let metadata = ["x-amz-meta-custom": "value123", "Content-Type": "application/json"]
 
             _ = try await storage.putObject(
                 bucket: "meta-bucket", key: "obj", data: [data].async,
-                size: Int64(data.readableBytes), metadata: metadata)
+                size: Int64(data.readableBytes), metadata: metadata, owner: "test-owner")
 
             let (readMeta, _) = try await storage.getObject(
-                bucket: "meta-bucket", key: "obj", range: nil)
+                bucket: "meta-bucket", key: "obj", versionId: nil, range: nil)
             XCTAssertEqual(readMeta.contentType, "application/json")
             XCTAssertEqual(readMeta.customMetadata["x-amz-meta-custom"], "value123")
+        }
+    }
+
+    func testStorageTagging() async throws {
+        try await withSQLStorage { storage in
+            let bucket = "tag-bucket"
+            try await storage.createBucket(name: bucket, owner: "test-owner")
+
+            // 1. Bucket Tagging
+            let bTags = [S3Tag(key: "B1", value: "V1"), S3Tag(key: "B2", value: "V2")]
+            try await storage.putTags(bucket: bucket, key: nil, versionId: nil, tags: bTags)
+
+            let retrievedBTags = try await storage.getTags(bucket: bucket, key: nil, versionId: nil)
+            XCTAssertEqual(retrievedBTags.count, 2)
+            XCTAssertTrue(retrievedBTags.contains(where: { $0.key == "B1" && $0.value == "V1" }))
+
+            try await storage.deleteTags(bucket: bucket, key: nil, versionId: nil)
+            let bTagsAfter = try await storage.getTags(bucket: bucket, key: nil, versionId: nil)
+            XCTAssertTrue(bTagsAfter.isEmpty)
+
+            // 2. Object Tagging
+            let data = ByteBuffer(string: "Tag Me")
+            _ = try await storage.putObject(
+                bucket: bucket, key: "t1", data: [data].async, size: 6, metadata: nil,
+                owner: "test-owner")
+
+            let oTags = [S3Tag(key: "O1", value: "V1")]
+            try await storage.putTags(bucket: bucket, key: "t1", versionId: nil, tags: oTags)
+
+            let retrievedOTags = try await storage.getTags(
+                bucket: bucket, key: "t1", versionId: nil)
+            XCTAssertEqual(retrievedOTags.count, 1)
+            XCTAssertEqual(retrievedOTags[0].key, "O1")
+
+            try await storage.deleteTags(bucket: bucket, key: "t1", versionId: nil)
+            let oTagsAfter = try await storage.getTags(bucket: bucket, key: "t1", versionId: nil)
+            XCTAssertTrue(oTagsAfter.isEmpty)
         }
     }
 }

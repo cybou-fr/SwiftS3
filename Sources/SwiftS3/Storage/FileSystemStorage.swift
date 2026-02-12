@@ -52,8 +52,14 @@ actor FileSystemStorage: StorageBackend {
         return rootPath.appending(name)
     }
 
-    private func getObjectPath(bucket: String, key: String) -> FilePath {
-        return rootPath.appending(bucket).appending(key)
+    private func getObjectPath(bucket: String, key: String, versionId: String? = nil) -> FilePath {
+        var path = rootPath.appending(bucket).appending(key)
+        if let versionId = versionId, versionId != "null" {
+            // Append versionId to filename to store separate versions
+            let filename = path.lastComponent?.string ?? key
+            path = path.removingLastComponent().appending("\(filename)@\(versionId)")
+        }
+        return path
     }
 
     func listBuckets() async throws -> [(name: String, created: Date)] {
@@ -89,27 +95,37 @@ actor FileSystemStorage: StorageBackend {
         return buckets
     }
 
-    func createBucket(name: String) async throws {
+    func createBucket(name: String, owner: String) async throws {
         let path = bucketPath(name)
         if try await fileSystem.exists(at: path) {
             throw S3Error.bucketAlreadyExists
         }
         try await fileSystem.createDirectory(
             at: path, withIntermediateDirectories: true, permissions: nil)
+        try await metadataStore.createBucket(name: name, owner: owner)
     }
 
     func deleteBucket(name: String) async throws {
         let path = bucketPath(name)
-        if !(try await fileSystem.exists(at: path)) {
-            throw S3Error.noSuchBucket
-        }
-
         // Check if empty
         let handle = try await fileSystem.openDirectory(atPath: path)
         let isEmpty: Bool
         do {
             var iterator = handle.listContents().makeAsyncIterator()
-            isEmpty = try await iterator.next() == nil
+            // Ignore internal metadata files for emptiness check?
+            // Better: if it's empty EXCEPT for internal files, then it's empty enough to delete metadata.
+            // Actually, internal files should be ignored in the count.
+            var count = 0
+            while let item = try await iterator.next() {
+                if item.name == ".bucket_metadata" || item.name == ".bucket_acl"
+                    || item.name == "versioning.json" || item.name == ".bucket_policy"
+                {
+                    continue
+                }
+                count += 1
+                break  // Found a "real" file
+            }
+            isEmpty = count == 0
             try await handle.close()
         } catch {
             try? await handle.close()
@@ -119,9 +135,12 @@ actor FileSystemStorage: StorageBackend {
         if !isEmpty {
             throw S3Error.bucketNotEmpty
         }
-        // recursive: false because we checked it's empty, but API requires arg
+
+        try await metadataStore.deleteBucket(name: name)
+
+        // recursive: true because we want to remove the hidden metadata files
         _ = try? await fileSystem.removeItem(
-            at: path, strategy: .platformDefault, recursively: false)
+            at: path, strategy: .platformDefault, recursively: true)
     }
 
     func headBucket(name: String) async throws {
@@ -141,14 +160,19 @@ actor FileSystemStorage: StorageBackend {
 
     func putObject<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, data: Stream, size: Int64?,
-        metadata: [String: String]?
-    ) async throws -> String where Stream.Element == ByteBuffer {
+        metadata: [String: String]?, owner: String
+    ) async throws -> ObjectMetadata where Stream.Element == ByteBuffer {
         let bPath = bucketPath(bucket)
         if !(try await fileSystem.exists(at: bPath)) {
             throw S3Error.noSuchBucket
         }
 
-        let path = getObjectPath(bucket: bucket, key: key)
+        // Determine Version ID
+        let versioning = try await getBucketVersioning(bucket: bucket)
+        let isEnabled = versioning?.status == .enabled
+        let versionId = isEnabled ? UUID().uuidString : "null"
+
+        let path = getObjectPath(bucket: bucket, key: key, versionId: versionId)
 
         // Ensure parent dir exists
         try await fileSystem.createDirectory(
@@ -184,25 +208,43 @@ actor FileSystemStorage: StorageBackend {
             lastModified: Date(),
             eTag: eTag,
             contentType: metadata?["Content-Type"],
-            customMetadata: metadata ?? [:]
+            customMetadata: metadata ?? [:],
+            owner: owner,
+            versionId: versionId,
+            isLatest: true,
+            isDeleteMarker: false
         )
         try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
 
-        return eTag
+        return meta
     }
 
-    func getObject(bucket: String, key: String, range: ValidatedRange?) async throws -> (
-        metadata: ObjectMetadata, body: AsyncStream<ByteBuffer>?
-    ) {
-        let path = getObjectPath(bucket: bucket, key: key)
+    func getObject(bucket: String, key: String, versionId: String?, range: ValidatedRange?)
+        async throws -> (
+            metadata: ObjectMetadata, body: AsyncStream<ByteBuffer>?
+        )
+    {
+        // 1. Get Metadata first to resolve versionId (if nil) and check existence/delete marker
+        let metadata = try await getObjectMetadata(bucket: bucket, key: key, versionId: versionId)
 
-        do {
-            _ = try await fileSystem.info(forFileAt: path, infoAboutSymbolicLink: false)
-        } catch {
-            throw S3Error.noSuchKey
+        // 2. Check Delete Marker
+        if metadata.isDeleteMarker {
+            if versionId != nil {
+                // Specific version is a delete marker -> 405 Method Not Allowed
+                throw S3Error.methodNotAllowed
+            } else {
+                // Latest version is a delete marker -> 404 Not Found
+                throw S3Error.noSuchKey
+            }
         }
 
-        let metadata = try await getObjectMetadata(bucket: bucket, key: key)
+        // 3. Resolve Path using the ACTUAL versionId from metadata
+        let path = getObjectPath(bucket: bucket, key: key, versionId: metadata.versionId)
+
+        if !(try await fileSystem.exists(at: path)) {
+            // Inconsistency: Metadata exists but file missing?
+            throw S3Error.internalError
+        }
 
         let handle = try await fileSystem.openFile(forReadingAt: path)
 
@@ -249,23 +291,62 @@ actor FileSystemStorage: StorageBackend {
         return (metadata, body)
     }
 
-    func deleteObject(bucket: String, key: String) async throws {
-        let path = getObjectPath(bucket: bucket, key: key)
-        _ = try? await fileSystem.removeItem(
-            at: path, strategy: .platformDefault, recursively: false)
-        try await metadataStore.deleteMetadata(bucket: bucket, key: key)
+    func deleteObject(bucket: String, key: String, versionId: String?) async throws -> (
+        versionId: String?, isDeleteMarker: Bool
+    ) {
+        if let versionId = versionId {
+            // Delete specific version
+            let path = getObjectPath(bucket: bucket, key: key, versionId: versionId)
+            _ = try? await fileSystem.removeItem(
+                at: path, strategy: .platformDefault, recursively: false)
+            try await metadataStore.deleteMetadata(bucket: bucket, key: key, versionId: versionId)
+            return (versionId: versionId, isDeleteMarker: false)
+        } else {
+            // Simple Delete (Delete Marker or Null Version)
+            let versioning = try await getBucketVersioning(bucket: bucket)
+            let isEnabled = versioning?.status == .enabled
+
+            if isEnabled {
+                // Create Delete Marker
+                let newVersionId = UUID().uuidString
+                let deleteMarker = ObjectMetadata(
+                    key: key,
+                    size: 0,
+                    lastModified: Date(),
+                    eTag: nil,
+                    contentType: nil,
+                    customMetadata: [:],
+                    owner: nil,  // Owner?
+                    versionId: newVersionId,
+                    isLatest: true,
+                    isDeleteMarker: true
+                )
+                try await metadataStore.saveMetadata(
+                    bucket: bucket, key: key, metadata: deleteMarker)
+                return (versionId: newVersionId, isDeleteMarker: true)
+            } else {
+                // Suspended or Unversioned: Delete "null" version
+                let path = getObjectPath(bucket: bucket, key: key, versionId: "null")
+                _ = try? await fileSystem.removeItem(
+                    at: path, strategy: .platformDefault, recursively: false)
+                try await metadataStore.deleteMetadata(bucket: bucket, key: key, versionId: "null")
+                return (versionId: "null", isDeleteMarker: false)
+            }
+        }
     }
 
     func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
         var deleted: [String] = []
         for key in keys {
-            try? await deleteObject(bucket: bucket, key: key)
+            try? await deleteObject(bucket: bucket, key: key, versionId: nil)  // Default to null/latest for bulk delete for now
             deleted.append(key)
         }
         return deleted
     }
 
-    func copyObject(fromBucket: String, fromKey: String, toBucket: String, toKey: String)
+    func copyObject(
+        fromBucket: String, fromKey: String, toBucket: String, toKey: String, owner: String
+    )
         async throws -> ObjectMetadata
     {
         let srcPath = getObjectPath(bucket: fromBucket, key: fromKey)
@@ -312,11 +393,26 @@ actor FileSystemStorage: StorageBackend {
         }
 
         // Copy Metadata
-        if let srcMeta = try? await metadataStore.getMetadata(bucket: fromBucket, key: fromKey) {
-            try await metadataStore.saveMetadata(bucket: toBucket, key: toKey, metadata: srcMeta)
+        if let srcMeta = try? await metadataStore.getMetadata(
+            bucket: fromBucket, key: fromKey, versionId: nil)
+        {
+            // Create new metadata with new owner
+            let newMeta = ObjectMetadata(
+                key: toKey,
+                size: srcMeta.size,
+                lastModified: Date(),
+                eTag: srcMeta.eTag,
+                contentType: srcMeta.contentType,
+                customMetadata: srcMeta.customMetadata,
+                owner: owner,
+                versionId: "null",
+                isLatest: true,
+                isDeleteMarker: false
+            )
+            try await metadataStore.saveMetadata(bucket: toBucket, key: toKey, metadata: newMeta)
         }
 
-        return try await getObjectMetadata(bucket: toBucket, key: toKey)
+        return try await getObjectMetadata(bucket: toBucket, key: toKey, versionId: nil)
     }
 
     func listObjects(
@@ -328,8 +424,10 @@ actor FileSystemStorage: StorageBackend {
             continuationToken: continuationToken, maxKeys: maxKeys)
     }
 
-    func getObjectMetadata(bucket: String, key: String) async throws -> ObjectMetadata {
-        return try await metadataStore.getMetadata(bucket: bucket, key: key)
+    func getObjectMetadata(bucket: String, key: String, versionId: String?) async throws
+        -> ObjectMetadata
+    {
+        return try await metadataStore.getMetadata(bucket: bucket, key: key, versionId: versionId)
     }
 
     // MARK: - Multipart Upload
@@ -341,9 +439,12 @@ actor FileSystemStorage: StorageBackend {
     struct UploadInfo: Codable {
         let key: String
         let metadata: [String: String]?
+        let owner: String
     }
 
-    func createMultipartUpload(bucket: String, key: String, metadata: [String: String]?)
+    func createMultipartUpload(
+        bucket: String, key: String, metadata: [String: String]?, owner: String
+    )
         async throws
         -> String
     {
@@ -353,7 +454,7 @@ actor FileSystemStorage: StorageBackend {
         try await fileSystem.createDirectory(
             at: path, withIntermediateDirectories: true, permissions: nil)
 
-        let info = UploadInfo(key: key, metadata: metadata)
+        let info = UploadInfo(key: key, metadata: metadata, owner: owner)
         let data = try JSONEncoder().encode(info)
 
         // Write info.json
@@ -486,7 +587,11 @@ actor FileSystemStorage: StorageBackend {
             lastModified: Date(),
             eTag: finalETag,
             contentType: info.metadata?["Content-Type"],
-            customMetadata: info.metadata ?? [:]
+            customMetadata: info.metadata ?? [:],
+            owner: info.owner,
+            versionId: "null",
+            isLatest: true,
+            isDeleteMarker: false
         )
         try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta)
 
@@ -537,5 +642,66 @@ actor FileSystemStorage: StorageBackend {
             // but `DELETE /?policy` returns 204.
             // However, `getBucketPolicy` throws.
         }
+    }
+
+    // MARK: - ACLs
+
+    func getACL(bucket: String, key: String?, versionId: String?) async throws
+        -> AccessControlPolicy
+    {
+        return try await metadataStore.getACL(bucket: bucket, key: key, versionId: versionId)
+    }
+
+    func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
+        async throws
+    {
+        try await metadataStore.putACL(bucket: bucket, key: key, versionId: versionId, acl: acl)
+    }
+
+    // MARK: - Versioning
+
+    func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration? {
+        return try await metadataStore.getBucketVersioning(bucket: bucket)
+    }
+
+    func putBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws {
+        try await metadataStore.setBucketVersioning(bucket: bucket, configuration: configuration)
+    }
+
+    func listObjectVersions(
+        bucket: String, prefix: String?, delimiter: String?, keyMarker: String?,
+        versionIdMarker: String?, maxKeys: Int?
+    ) async throws -> ListVersionsResult {
+        return try await metadataStore.listObjectVersions(
+            bucket: bucket, prefix: prefix, delimiter: delimiter, keyMarker: keyMarker,
+            versionIdMarker: versionIdMarker, maxKeys: maxKeys)
+    }
+
+    // MARK: - Tagging
+
+    func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag] {
+        return try await metadataStore.getTags(bucket: bucket, key: key, versionId: versionId)
+    }
+
+    func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws {
+        try await metadataStore.putTags(bucket: bucket, key: key, versionId: versionId, tags: tags)
+    }
+
+    func deleteTags(bucket: String, key: String?, versionId: String?) async throws {
+        try await metadataStore.deleteTags(bucket: bucket, key: key, versionId: versionId)
+    }
+
+    // MARK: - Lifecycle
+
+    func getBucketLifecycle(bucket: String) async throws -> LifecycleConfiguration? {
+        return try await metadataStore.getLifecycle(bucket: bucket)
+    }
+
+    func putBucketLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws {
+        try await metadataStore.putLifecycle(bucket: bucket, configuration: configuration)
+    }
+
+    func deleteBucketLifecycle(bucket: String) async throws {
+        try await metadataStore.deleteLifecycle(bucket: bucket)
     }
 }

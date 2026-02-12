@@ -30,7 +30,11 @@ struct SQLMetadataStore: MetadataStore {
         let createBuckets = """
             CREATE TABLE IF NOT EXISTS buckets (
                 name TEXT PRIMARY KEY,
-                created_at REAL
+                created_at REAL,
+                owner_id TEXT,
+                acl TEXT,
+                versioning_status TEXT DEFAULT 'SUSPENDED',
+                tags TEXT
             );
             """
         _ = try await connection.query(createBuckets)
@@ -39,16 +43,31 @@ struct SQLMetadataStore: MetadataStore {
             CREATE TABLE IF NOT EXISTS objects (
                 bucket TEXT,
                 key TEXT,
+                version_id TEXT,
+                is_latest BOOLEAN DEFAULT 1,
+                is_delete_marker BOOLEAN DEFAULT 0,
                 size INTEGER,
                 last_modified REAL,
                 etag TEXT,
                 content_type TEXT,
                 custom_metadata TEXT,
-                PRIMARY KEY (bucket, key),
+                owner_id TEXT,
+                acl TEXT,
+                tags TEXT,
+                PRIMARY KEY (bucket, key, version_id),
                 FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
             );
             """
         _ = try await connection.query(createObjects)
+
+        let createLifecycle = """
+            CREATE TABLE IF NOT EXISTS bucket_lifecycle (
+                bucket_name TEXT PRIMARY KEY,
+                configuration TEXT,
+                FOREIGN KEY(bucket_name) REFERENCES buckets(name) ON DELETE CASCADE
+            );
+            """
+        _ = try await connection.query(createLifecycle)
 
         let createUsers = """
             CREATE TABLE IF NOT EXISTS users (
@@ -68,18 +87,144 @@ struct SQLMetadataStore: MetadataStore {
                 [.text("admin"), .text("password"), .text("admin")])
             logger.info("Seeded default admin user")
         }
+
+        try await migrateSchema()
     }
 
-    func deleteMetadata(bucket: String, key: String) async throws {
-        let query = "DELETE FROM objects WHERE bucket = ? AND key = ?;"
-        _ = try await connection.query(query, [SQLiteData.text(bucket), SQLiteData.text(key)])
+    private func migrateSchema() async throws {
+        // 1. Buckets Migration (Simple ADD COLUMN)
+        // owner_id
+        do {
+            _ = try await connection.query("ALTER TABLE buckets ADD COLUMN owner_id TEXT;")
+        } catch {}
+        // acl
+        do {
+            _ = try await connection.query("ALTER TABLE buckets ADD COLUMN acl TEXT;")
+        } catch {}
+        // versioning_status
+        do {
+            _ = try await connection.query(
+                "ALTER TABLE buckets ADD COLUMN versioning_status TEXT DEFAULT 'SUSPENDED';")
+        } catch {}
+        // tags
+        do {
+            _ = try await connection.query("ALTER TABLE buckets ADD COLUMN tags TEXT;")
+        } catch {}
+
+        // 2. Objects Migration (Complex Recreate for PK change)
+        // Check if version_id exists
+        var versionIdExists = false
+        do {
+            _ = try await connection.query("SELECT version_id FROM objects LIMIT 1")
+            versionIdExists = true
+        } catch {
+            versionIdExists = false
+        }
+
+        if !versionIdExists {
+            logger.info("Migrating objects table to support versioning...")
+            // Rename old table
+            _ = try await connection.query("ALTER TABLE objects RENAME TO objects_old")
+
+            // Create new table
+            let createObjects = """
+                CREATE TABLE IF NOT EXISTS objects (
+                    bucket TEXT,
+                    key TEXT,
+                    version_id TEXT,
+                    is_latest BOOLEAN DEFAULT 1,
+                    is_delete_marker BOOLEAN DEFAULT 0,
+                    size INTEGER,
+                    last_modified REAL,
+                    etag TEXT,
+                    content_type TEXT,
+                    custom_metadata TEXT,
+                    owner_id TEXT,
+                    acl TEXT,
+                    tags TEXT,
+                    PRIMARY KEY (bucket, key, version_id),
+                    FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
+                );
+                """
+            _ = try await connection.query(createObjects)
+
+            // Copy data
+            // We need to know if objects_old has owner_id and acl to construct select correctly
+            // Simple check: try to select them
+            var hasOwner = false
+            var hasACL = false
+            do {
+                _ = try await connection.query("SELECT owner_id FROM objects_old LIMIT 1")
+                hasOwner = true
+            } catch {}
+            do {
+                _ = try await connection.query("SELECT acl FROM objects_old LIMIT 1")
+                hasACL = true
+            } catch {}
+
+            let ownerField = hasOwner ? "owner_id" : "'admin'"  // Default to admin if missing
+            let aclField = hasACL ? "acl" : "NULL"
+
+            let copyQuery = """
+                    INSERT INTO objects (bucket, key, size, last_modified, etag, content_type, custom_metadata, owner_id, acl, tags, version_id, is_latest, is_delete_marker)
+                    SELECT bucket, key, size, last_modified, etag, content_type, custom_metadata, \(ownerField), \(aclField), NULL, 'null', 1, 0
+                    FROM objects_old;
+                """
+            _ = try await connection.query(copyQuery)
+
+            // Drop old table
+            _ = try await connection.query("DROP TABLE objects_old")
+            logger.info("Objects table migration completed.")
+        }
     }
 
-    func getMetadata(bucket: String, key: String) async throws -> ObjectMetadata {
-        let query =
-            "SELECT size, last_modified, etag, content_type, custom_metadata FROM objects WHERE bucket = ? AND key = ?;"
-        let rows = try await connection.query(
-            query, [SQLiteData.text(bucket), SQLiteData.text(key)])
+    func deleteMetadata(bucket: String, key: String, versionId: String?) async throws {
+        // Check if we are deleting the latest version
+        let currentMetadata = try? await getMetadata(bucket: bucket, key: key, versionId: versionId)
+        let wasLatest = currentMetadata?.isLatest ?? false
+
+        var query = "DELETE FROM objects WHERE bucket = ? AND key = ?"
+        var params: [SQLiteData] = [.text(bucket), .text(key)]
+
+        if let versionId = versionId {
+            query += " AND version_id = ?"
+            params.append(.text(versionId))
+        } else {
+            query += " AND is_latest = 1"
+        }
+        _ = try await connection.query(query, params)
+
+        // Restore latest if needed
+        if wasLatest {
+            let restoreLatest = """
+                UPDATE objects SET is_latest = 1 
+                WHERE bucket = ? AND key = ? 
+                AND version_id = (
+                    SELECT version_id FROM objects 
+                    WHERE bucket = ? AND key = ? 
+                    ORDER BY last_modified DESC LIMIT 1
+                )
+                """
+            _ = try await connection.query(
+                restoreLatest, [.text(bucket), .text(key), .text(bucket), .text(key)])
+        }
+    }
+
+    func getMetadata(bucket: String, key: String, versionId: String?) async throws -> ObjectMetadata
+    {
+        var query =
+            "SELECT size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker FROM objects WHERE bucket = ? AND key = ?"
+        var params: [SQLiteData] = [.text(bucket), .text(key)]
+
+        if let versionId = versionId {
+            query += " AND version_id = ?"
+            params.append(.text(versionId))
+        } else {
+            // Get Latest
+            query += " AND is_latest = 1"
+        }
+
+        let rows = try await connection.query(query, params)
 
         guard let row = rows.first else {
             throw S3Error.noSuchKey
@@ -96,28 +241,65 @@ struct SQLMetadataStore: MetadataStore {
             (try? JSONDecoder().decode([String: String].self, from: Data(customMetadataJSON.utf8)))
             ?? [:]
 
+        // Extra columns
+        let owner = row.column("owner_id")?.string
+        let versionId = row.column("version_id")?.string ?? "null"
+        let isLatest = (row.column("is_latest")?.integer ?? 1) == 1
+        let isDeleteMarker = (row.column("is_delete_marker")?.integer ?? 0) == 1
+
         return ObjectMetadata(
             key: key,
             size: Int64(size),
             lastModified: lastModified,
             eTag: eTag,
             contentType: contentType,
-            customMetadata: customMetadata
+            customMetadata: customMetadata,
+            owner: owner,
+            versionId: versionId,
+            isLatest: isLatest,
+            isDeleteMarker: isDeleteMarker
         )
     }
 
-    func saveMetadata(bucket: String, key: String, metadata: ObjectMetadata) async throws {
+    func createBucket(name: String, owner: String) async throws {
+        let query = "INSERT INTO buckets (name, created_at, owner_id) VALUES (?, ?, ?)"
+        do {
+            _ = try await connection.query(
+                query,
+                [
+                    .text(name),
+                    .float(Date().timeIntervalSince1970),
+                    .text(owner),
+                ])
+        } catch {
+            throw S3Error.bucketAlreadyExists
+        }
+    }
 
-        // Upsert
+    func deleteBucket(name: String) async throws {
+        let query = "DELETE FROM buckets WHERE name = ?"
+        _ = try await connection.query(query, [.text(name)])
+    }
+
+    func saveMetadata(bucket: String, key: String, metadata: ObjectMetadata) async throws {
+        // 1. If this is the latest version, update existing latest to false
+        if metadata.isLatest {
+            let updateLatest = "UPDATE objects SET is_latest = 0 WHERE bucket = ? AND key = ?"
+            _ = try await connection.query(updateLatest, [.text(bucket), .text(key)])
+        }
+
         let query = """
-            INSERT INTO objects (bucket, key, size, last_modified, etag, content_type, custom_metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(bucket, key) DO UPDATE SET
+            INSERT INTO objects (bucket, key, size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket, key, version_id) DO UPDATE SET
                 size=excluded.size,
                 last_modified=excluded.last_modified,
                 etag=excluded.etag,
                 content_type=excluded.content_type,
-                custom_metadata=excluded.custom_metadata;
+                custom_metadata=excluded.custom_metadata,
+                owner_id=coalesce(excluded.owner_id, objects.owner_id),
+                is_latest=excluded.is_latest,
+                is_delete_marker=excluded.is_delete_marker;
             """
 
         let metaJSON = try JSONEncoder().encode(metadata.customMetadata)
@@ -133,7 +315,118 @@ struct SQLMetadataStore: MetadataStore {
                 metadata.eTag.map { .text($0) } ?? .null,
                 metadata.contentType.map { .text($0) } ?? .null,
                 .text(metaString),
+                metadata.owner.map { .text($0) } ?? .null,
+                .text(metadata.versionId),
+                .integer(metadata.isLatest ? 1 : 0),
+                .integer(metadata.isDeleteMarker ? 1 : 0),
             ])
+    }
+
+    // MARK: - ACLs
+
+    func getACL(bucket: String, key: String?, versionId: String?) async throws
+        -> AccessControlPolicy
+    {
+        let query: String
+        let params: [SQLiteData]
+
+        if let key = key {
+            var q = "SELECT acl, owner_id FROM objects WHERE bucket = ? AND key = ?"
+            var p: [SQLiteData] = [.text(bucket), .text(key)]
+            if let versionId = versionId {
+                q += " AND version_id = ?"
+                p.append(.text(versionId))
+            } else {
+                q += " AND is_latest = 1"
+            }
+            query = q
+            params = p
+        } else {
+            query = "SELECT acl, owner_id FROM buckets WHERE name = ?"
+            params = [.text(bucket)]
+        }
+
+        let rows = try await connection.query(query, params)
+        guard let row = rows.first else {
+            // Row not found
+            if key != nil {
+                throw S3Error.noSuchKey
+            } else {
+                throw S3Error.noSuchBucket
+            }
+        }
+
+        if let aclJSON = row.column("acl")?.string,
+            let data = aclJSON.data(using: .utf8),
+            let acl = try? JSONDecoder().decode(AccessControlPolicy.self, from: data)
+        {
+            return acl
+        }
+
+        // Fallback: Default Private ACL
+        // If owner_id is present, grant FULL_CONTROL to owner.
+        if let ownerID = row.column("owner_id")?.string {
+            return CannedACL.privateACL.createPolicy(
+                owner: Owner(id: ownerID, displayName: ownerID))
+        }
+
+        // If no owner_id (legacy data?), default to admin
+        return CannedACL.privateACL.createPolicy(owner: Owner(id: "admin", displayName: "admin"))
+
+    }
+
+    func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
+        async throws
+    {
+        let aclData = try JSONEncoder().encode(acl)
+        let aclString = String(data: aclData, encoding: .utf8) ?? ""
+        let ownerId = acl.owner.id
+
+        if let key = key {
+            // Update Object
+            var query = "UPDATE objects SET acl = ?, owner_id = ? WHERE bucket = ? AND key = ?"
+            var params: [SQLiteData] = [
+                .text(aclString), .text(ownerId), .text(bucket), .text(key),
+            ]
+
+            if let versionId = versionId {
+                query += " AND version_id = ?"
+                params.append(.text(versionId))
+            } else {
+                query += " AND is_latest = 1"
+            }
+            _ = try await connection.query(query, params)
+        } else {
+            // Update Bucket
+            let query = "UPDATE buckets SET acl = ?, owner_id = ? WHERE name = ?"
+            _ = try await connection.query(
+                query, [.text(aclString), .text(ownerId), .text(bucket)])
+        }
+    }
+
+    // MARK: - Versioning
+
+    func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration? {
+        let query = "SELECT versioning_status FROM buckets WHERE name = ?"
+        let rows = try await connection.query(query, [.text(bucket)])
+
+        guard let row = rows.first else {
+            throw S3Error.noSuchBucket
+        }
+
+        if let statusStr = row.column("versioning_status")?.string,
+            let status = VersioningConfiguration.Status(rawValue: statusStr)
+        {
+            return VersioningConfiguration(status: status)
+        }
+
+        return VersioningConfiguration(status: .suspended)
+    }
+
+    func setBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws {
+        let query = "UPDATE buckets SET versioning_status = ? WHERE name = ?"
+        _ = try await connection.query(
+            query, [.text(configuration.status.rawValue), .text(bucket)])
     }
 
     func listObjects(
@@ -205,22 +498,6 @@ struct SQLMetadataStore: MetadataStore {
         // Reuse the logic from FileSystemStorage for delimiter processing (it expects sorted list)
         // We can extract that logic to a helper or just duplicate for now.
         // Duplicating for speed of implementation, effectively "Client Side" filtering logic on "Server Side" data.
-
-        // Filtering continuationToken/marker
-        // If we used SQL LIMIT, we might miss the start.
-        // We should add "AND key > marker" to SQL!
-
-        // Wait, I didn't add the marker filter to SQL.
-        // Correct approach:
-        // WHERE bucket = ?
-        // AND key LIKE 'prefix%' (if prefix)
-        // AND key > 'marker' (if marker)
-        // ORDER BY key ASC
-        // LIMIT ? (if no delimiter)
-
-        // Let's refine for next iteration or just do memory filtering for now to be safe and identical to FS behavior.
-        // But goal is performance.
-        // I will stick to memory filtering for this first pass to ensure correctness, as `sqlite-nio` query building strings manually is error prone for complex dynamic queries.
 
         return processListObjects(
             allObjects: allObjects,
@@ -299,8 +576,224 @@ struct SQLMetadataStore: MetadataStore {
         )
     }
 
+    func listObjectVersions(
+        bucket: String, prefix: String?, delimiter: String?, keyMarker: String?,
+        versionIdMarker: String?, maxKeys: Int?
+    ) async throws -> ListVersionsResult {
+        var query = """
+                SELECT
+                    key, size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker
+                FROM objects
+                WHERE bucket = ?
+            """
+        var params: [SQLiteData] = [.text(bucket)]
+
+        if let prefix = prefix {
+            query += " AND key LIKE ?"
+            params.append(.text("\(prefix)%"))
+        }
+
+        // Ordering is key for delimiter processing
+        query += " ORDER BY key ASC, version_id ASC"
+
+        // If no delimiter, we can LIMIT in SQL.
+        // If delimiter is present, we need to scan to group prefixes.
+        if delimiter == nil {
+            let limit = (maxKeys ?? 1000) + 1
+            query += " LIMIT \(limit)"
+        }
+
+        let rows = try await connection.query(query, params)
+
+        var allVersions: [ObjectMetadata] = []
+        for row in rows {
+            let key = row.column("key")?.string ?? ""
+            let size = Int64(row.column("size")?.integer ?? 0)
+            let lastModified = Date(timeIntervalSince1970: row.column("last_modified")?.double ?? 0)
+            let eTag = row.column("etag")?.string
+            let contentType = row.column("content_type")?.string
+            let owner = row.column("owner_id")?.string
+            let versionId = row.column("version_id")?.string ?? "null"
+            let isLatest = row.column("is_latest")?.bool ?? false
+            let isDeleteMarker = row.column("is_delete_marker")?.bool ?? false
+
+            var customMetadata: [String: String] = [:]
+            if let metaJSON = row.column("custom_metadata")?.string,
+                let data = metaJSON.data(using: .utf8)
+            {
+                customMetadata =
+                    (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+            }
+
+            allVersions.append(
+                ObjectMetadata(
+                    key: key,
+                    size: size,
+                    lastModified: lastModified,
+                    eTag: eTag,
+                    contentType: contentType,
+                    customMetadata: customMetadata,
+                    owner: owner,
+                    versionId: versionId,
+                    isLatest: isLatest,
+                    isDeleteMarker: isDeleteMarker
+                ))
+        }
+
+        return processListVersions(
+            allVersions: allVersions,
+            prefix: prefix,
+            delimiter: delimiter,
+            keyMarker: keyMarker,
+            versionIdMarker: versionIdMarker,
+            maxKeys: maxKeys
+        )
+    }
+
+    private func processListVersions(
+        allVersions: [ObjectMetadata],
+        prefix: String?, delimiter: String?, keyMarker: String?, versionIdMarker: String?,
+        maxKeys: Int?
+    ) -> ListVersionsResult {
+        var versions: [ObjectMetadata] = []
+        var commonPrefixes: Set<String> = []
+        var truncated = false
+        var lastPrefix: String? = nil
+
+        let limit = maxKeys ?? 1000
+        var count = 0
+
+        for ver in allVersions {
+            // Marker check
+            if let keyMarker = keyMarker {
+                if ver.key < keyMarker { continue }
+                if ver.key == keyMarker {
+                    if let vidMarker = versionIdMarker, ver.versionId <= vidMarker {
+                        continue
+                    }
+                }
+            }
+
+            if count >= limit {
+                truncated = true
+                break
+            }
+
+            let key = ver.key
+            var isCommonPrefix = false
+            var currentPrefix = ""
+
+            if let delimiter = delimiter {
+                let prefixLen = prefix?.count ?? 0
+                if key.count > prefixLen {
+                    let searchRange = key.index(key.startIndex, offsetBy: prefixLen)..<key.endIndex
+                    if let range = key.range(of: delimiter, range: searchRange) {
+                        currentPrefix = String(key[..<range.upperBound])
+                        isCommonPrefix = true
+                    }
+                }
+            }
+
+            if isCommonPrefix {
+                if currentPrefix != lastPrefix {
+                    commonPrefixes.insert(currentPrefix)
+                    lastPrefix = currentPrefix
+                    count += 1
+                }
+            } else {
+                versions.append(ver)
+                count += 1
+            }
+        }
+
+        let nextKeyMarker = truncated ? versions.last?.key : nil
+        let nextVersionIdMarker = truncated ? versions.last?.versionId : nil
+
+        return ListVersionsResult(
+            versions: versions,
+            commonPrefixes: Array(commonPrefixes).sorted(),
+            isTruncated: truncated,
+            nextKeyMarker: nextKeyMarker,
+            nextVersionIdMarker: nextVersionIdMarker
+        )
+    }
+
     func shutdown() async throws {
         try await connection.close()
+    }
+
+    // MARK: - Tagging
+
+    func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag] {
+        let query: String
+        let params: [SQLiteData]
+
+        if let key = key {
+            var q = "SELECT tags FROM objects WHERE bucket = ? AND key = ?"
+            var p: [SQLiteData] = [.text(bucket), .text(key)]
+            if let versionId = versionId {
+                q += " AND version_id = ?"
+                p.append(.text(versionId))
+            } else {
+                q += " AND is_latest = 1"
+            }
+            query = q
+            params = p
+        } else {
+            query = "SELECT tags FROM buckets WHERE name = ?"
+            params = [.text(bucket)]
+        }
+
+        let rows = try await connection.query(query, params)
+        guard let row = rows.first else {
+            if key != nil { throw S3Error.noSuchKey } else { throw S3Error.noSuchBucket }
+        }
+
+        if let tagsJSON = row.column("tags")?.string,
+            let data = tagsJSON.data(using: .utf8),
+            let tags = try? JSONDecoder().decode([S3Tag].self, from: data)
+        {
+            return tags
+        }
+
+        return []
+    }
+
+    func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws {
+        let tagsData = try JSONEncoder().encode(tags)
+        let tagsString = String(data: tagsData, encoding: .utf8) ?? "[]"
+
+        if let key = key {
+            var query = "UPDATE objects SET tags = ? WHERE bucket = ? AND key = ?"
+            var params: [SQLiteData] = [.text(tagsString), .text(bucket), .text(key)]
+            if let versionId = versionId {
+                query += " AND version_id = ?"
+                params.append(.text(versionId))
+            } else {
+                query += " AND is_latest = 1"
+            }
+            _ = try await connection.query(query, params)
+        } else {
+            let query = "UPDATE buckets SET tags = ? WHERE name = ?"
+            _ = try await connection.query(query, [.text(tagsString), .text(bucket)])
+        }
+    }
+
+    func deleteTags(bucket: String, key: String?, versionId: String?) async throws {
+        if let key = key {
+            var query = "UPDATE objects SET tags = NULL WHERE bucket = ? AND key = ?"
+            var params: [SQLiteData] = [.text(bucket), .text(key)]
+            if let versionId = versionId {
+                query += " AND version_id = ?"
+                params.append(.text(versionId))
+            } else {
+                query += " AND is_latest = 1"
+            }
+            _ = try await connection.query(query, params)
+        } else {
+            let query = "UPDATE buckets SET tags = NULL WHERE name = ?"
+            _ = try await connection.query(query, [.text(bucket)])
+        }
     }
 }
 
@@ -347,5 +840,30 @@ extension SQLMetadataStore: UserStore {
     func deleteUser(accessKey: String) async throws {
         let query = "DELETE FROM users WHERE access_key = ?"
         _ = try await connection.query(query, [.text(accessKey)])
+    }
+
+    // MARK: - Lifecycle
+
+    func getLifecycle(bucket: String) async throws -> LifecycleConfiguration? {
+        let query = "SELECT configuration FROM bucket_lifecycle WHERE bucket_name = ?"
+        let rows = try await connection.query(query, [.text(bucket)])
+        guard let row = rows.first, let configJSON = row.column("configuration")?.string else {
+            return nil
+        }
+        let data = configJSON.data(using: .utf8) ?? Data()
+        return try? JSONDecoder().decode(LifecycleConfiguration.self, from: data)
+    }
+
+    func putLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws {
+        let data = try JSONEncoder().encode(configuration)
+        let configJSON = String(data: data, encoding: .utf8) ?? ""
+        let query =
+            "INSERT OR REPLACE INTO bucket_lifecycle (bucket_name, configuration) VALUES (?, ?)"
+        _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
+    }
+
+    func deleteLifecycle(bucket: String) async throws {
+        let query = "DELETE FROM bucket_lifecycle WHERE bucket_name = ?"
+        _ = try await connection.query(query, [.text(bucket)])
     }
 }

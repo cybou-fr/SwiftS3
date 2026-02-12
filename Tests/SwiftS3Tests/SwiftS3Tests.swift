@@ -70,7 +70,7 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "list-bucket")
+        try await storage.createBucket(name: "list-bucket", owner: "test-owner")
 
         // Create nested structure
         // a/1.txt
@@ -79,13 +79,17 @@ struct SwiftS3Tests {
         // c.txt
         let data = ByteBuffer(string: ".")
         _ = try await storage.putObject(
-            bucket: "list-bucket", key: "a/1.txt", data: [data].async, size: 1, metadata: nil)
+            bucket: "list-bucket", key: "a/1.txt", data: [data].async, size: 1, metadata: nil,
+            owner: "test-owner")
         _ = try await storage.putObject(
-            bucket: "list-bucket", key: "a/2.txt", data: [data].async, size: 1, metadata: nil)
+            bucket: "list-bucket", key: "a/2.txt", data: [data].async, size: 1, metadata: nil,
+            owner: "test-owner")
         _ = try await storage.putObject(
-            bucket: "list-bucket", key: "b/1.txt", data: [data].async, size: 1, metadata: nil)
+            bucket: "list-bucket", key: "b/1.txt", data: [data].async, size: 1, metadata: nil,
+            owner: "test-owner")
         _ = try await storage.putObject(
-            bucket: "list-bucket", key: "c.txt", data: [data].async, size: 1, metadata: nil)
+            bucket: "list-bucket", key: "c.txt", data: [data].async, size: 1, metadata: nil,
+            owner: "test-owner")
 
         // 1. Prefix
         let res1 = try await storage.listObjects(
@@ -131,19 +135,19 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "src-bucket")
-        try await storage.createBucket(name: "dst-bucket")
+        try await storage.createBucket(name: "src-bucket", owner: "test-owner")
+        try await storage.createBucket(name: "dst-bucket", owner: "test-owner")
 
         let data = ByteBuffer(string: "Copy Me")
         let metadata = ["x-amz-meta-original": "true"]
         _ = try await storage.putObject(
             bucket: "src-bucket", key: "source.txt", data: [data].async,
-            size: Int64(data.readableBytes), metadata: metadata)
+            size: Int64(data.readableBytes), metadata: metadata, owner: "test-owner")
 
         // Copy
         let copyMeta = try await storage.copyObject(
             fromBucket: "src-bucket", fromKey: "source.txt", toBucket: "dst-bucket",
-            toKey: "copied.txt")
+            toKey: "copied.txt", owner: "test-owner")
 
         #expect(copyMeta.key == "copied.txt")
         #expect(copyMeta.size == Int64(data.readableBytes))
@@ -151,7 +155,7 @@ struct SwiftS3Tests {
 
         // Verify content
         let (_, body) = try await storage.getObject(
-            bucket: "dst-bucket", key: "copied.txt", range: nil)
+            bucket: "dst-bucket", key: "copied.txt", versionId: nil, range: nil)
         var received = ""
         if let body = body {
             for await chunk in body {
@@ -168,7 +172,7 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "test-bucket")
+        try await storage.createBucket(name: "test-bucket", owner: "test-owner")
         let result = try await storage.listObjects(
             bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil,
             maxKeys: nil)
@@ -186,7 +190,7 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "test-bucket")
+        try await storage.createBucket(name: "test-bucket", owner: "test-owner")
 
         let data = Data("Hello, World!".utf8)
         let buffer = ByteBuffer(bytes: data)
@@ -195,10 +199,10 @@ struct SwiftS3Tests {
             continuation.finish()
         }
 
-        let etag = try await storage.putObject(
+        let meta = try await storage.putObject(
             bucket: "test-bucket", key: "hello.txt", data: stream, size: Int64(data.count),
-            metadata: nil)
-        #expect(!etag.isEmpty)
+            metadata: nil, owner: "test-owner")
+        #expect(meta.eTag != nil && !meta.eTag!.isEmpty)
 
         let result = try await storage.listObjects(
             bucket: "test-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil,
@@ -207,7 +211,7 @@ struct SwiftS3Tests {
         #expect(result.objects.first?.key == "hello.txt")
 
         let (metadata, body) = try await storage.getObject(
-            bucket: "test-bucket", key: "hello.txt", range: nil)
+            bucket: "test-bucket", key: "hello.txt", versionId: nil, range: nil)
         #expect(metadata.size == Int64(data.count))
 
         var receivedData = Data()
@@ -460,23 +464,24 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "meta-bucket")
+        try await storage.createBucket(name: "meta-bucket", owner: "test-owner")
 
         let data = ByteBuffer(string: "Hello Metadata")
         let metadata = ["x-amz-meta-custom": "value123", "Content-Type": "application/json"]
 
         _ = try await storage.putObject(
             bucket: "meta-bucket", key: "obj", data: [data].async, size: Int64(data.readableBytes),
-            metadata: metadata)
+            metadata: metadata, owner: "test-owner")
 
         let (readMeta, _) = try await storage.getObject(
-            bucket: "meta-bucket", key: "obj", range: nil)
+            bucket: "meta-bucket", key: "obj", versionId: nil, range: nil)
 
         #expect(readMeta.contentType == "application/json")
         #expect(readMeta.customMetadata["x-amz-meta-custom"] == "value123")
 
         // head object
-        let headMeta = try await storage.getObjectMetadata(bucket: "meta-bucket", key: "obj")
+        let headMeta = try await storage.getObjectMetadata(
+            bucket: "meta-bucket", key: "obj", versionId: nil)
         #expect(headMeta.contentType == "application/json")
         #expect(headMeta.customMetadata["x-amz-meta-custom"] == "value123")
     }
@@ -488,18 +493,18 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "range-bucket")
+        try await storage.createBucket(name: "range-bucket", owner: "test-owner")
 
         let content = "0123456789"
         let data = ByteBuffer(string: content)
         _ = try await storage.putObject(
             bucket: "range-bucket", key: "digits", data: [data].async,
-            size: Int64(data.readableBytes), metadata: nil)
+            size: Int64(data.readableBytes), metadata: nil, owner: "test-owner")
 
         // Test Range: 0-4 (5 bytes) -> "01234"
         let range1 = ValidatedRange(start: 0, end: 4)
         let (_, body1) = try await storage.getObject(
-            bucket: "range-bucket", key: "digits", range: range1)
+            bucket: "range-bucket", key: "digits", versionId: nil, range: range1)
 
         var received1 = ""
         if let body1 = body1 {
@@ -512,7 +517,7 @@ struct SwiftS3Tests {
         // Test Range: 5-9 (5 bytes) -> "56789"
         let range2 = ValidatedRange(start: 5, end: 9)
         let (_, body2) = try await storage.getObject(
-            bucket: "range-bucket", key: "digits", range: range2)
+            bucket: "range-bucket", key: "digits", versionId: nil, range: range2)
 
         var received2 = ""
         if let body2 = body2 {
@@ -529,11 +534,11 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "multi-bucket")
+        try await storage.createBucket(name: "multi-bucket", owner: "test-owner")
 
         // 1. Initiate
         let uploadId = try await storage.createMultipartUpload(
-            bucket: "multi-bucket", key: "large-file", metadata: nil)
+            bucket: "multi-bucket", key: "large-file", metadata: nil, owner: "test-owner")
         #expect(!uploadId.isEmpty)
 
         // 2. Upload Parts
@@ -561,7 +566,7 @@ struct SwiftS3Tests {
 
         // 4. Verify Content
         let (_, body) = try await storage.getObject(
-            bucket: "multi-bucket", key: "large-file", range: nil)
+            bucket: "multi-bucket", key: "large-file", versionId: nil, range: nil)
 
         var receivedData = ""
         if let body = body {
@@ -662,13 +667,14 @@ struct SwiftS3Tests {
         let storage = FileSystemStorage(rootPath: root)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
-        try await storage.createBucket(name: "checksum-bucket")
+        try await storage.createBucket(name: "checksum-bucket", owner: "test-owner")
 
         let content = "Hello Checksum"
         let data = ByteBuffer(string: content)
-        let etag = try await storage.putObject(
+        let meta = try await storage.putObject(
             bucket: "checksum-bucket", key: "verified.txt", data: [data].async,
-            size: Int64(data.readableBytes), metadata: nil)
+            size: Int64(data.readableBytes), metadata: nil, owner: "test-owner")
+        let etag = meta.eTag ?? ""
 
         // The etag IS the SHA256 hex hash — verify it's a valid 64-char hex string
         #expect(etag.count == 64)

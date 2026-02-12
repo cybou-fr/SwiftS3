@@ -5,11 +5,16 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 ## Features
 
 - **S3 Compatibility**: Supports core S3 API operations giving you a familiar interface.
-- **SQLite Metadata Engine**: Uses a high-performance SQLite engine for managing object metadata, enabling fast listing, searching, and filtering of billions of objects.
-- **Non-blocking Architecture**: Built with [SwiftNIO](https://github.com/apple/swift-nio) and `_NIOFileSystem` for fully asynchronous, non-blocking I/O, ensuring high throughput and responsiveness.
-- **Streaming Data Paths**: Implements streaming for both uploads and downloads, supporting massive objects with minimal memory overhead.
-- **AWS Signature V4 Auth**: Implements industry-standard AWS Signature Version 4 authentication for secure and compatible requests.
+- **SQLite Metadata Engine**: Uses SQLite for managing object metadata, enabling fast listing, searching, and filtering.
+- **Non-blocking Architecture**: Built with [SwiftNIO](https://github.com/apple/swift-nio) and `_NIOFileSystem` for asynchronous, non-blocking I/O.
+- **Streaming Data Paths**: Supports streaming for both uploads and downloads, handling large objects efficiently.
+- **AWS Signature V4 Auth**: Implements AWS Signature Version 4 authentication for secure and compatible requests.
 - **Bucket Policies**: Supports JSON-based IAM policies for granular access control.
+- **Access Control Lists (ACLs)**: Supports canned ACLs (private, public-read, etc.) for buckets and objects.
+- **Object Versioning**: Supports keeping multiple versions of the same object, including delete markers and restoration of previous versions.
+- **Object Tagging**: Support for categorizing objects with key-value pairs.
+- **Checksum Verification**: Automatic SHA256/CRC32C checksum verification on upload and download.
+- **Lifecycle Management**: Periodical expiration of old objects based on bucket rules.
 - **Extensible Storage**: Modular architecture allowing for different storage backends and metadata stores.
 
 ## Supported Operations
@@ -19,7 +24,15 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Create Bucket**: `PUT /:bucket`
 - **Delete Bucket**: `DELETE /:bucket`
 - **List Objects**: `GET /:bucket`
+    - Supports V1 and V2 (`list-type=2`).
     - Supports `prefix`, `delimiter`, `marker`, and `max-keys` query parameters.
+- **List Object Versions**: `GET /:bucket?versions`
+- **Bucket ACL**:
+    - **Get ACL**: `GET /:bucket?acl`
+    - **Put ACL**: `PUT /:bucket?acl`
+- **Bucket Versioning**:
+    - **Get Versioning**: `GET /:bucket?versioning`
+    - **Put Versioning**: `PUT /:bucket?versioning`
 - **Bucket Policy**:
     - **Put Policy**: `PUT /:bucket?policy`
     - **Get Policy**: `GET /:bucket?policy`
@@ -30,11 +43,18 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
     - Supports `x-amz-meta-*` headers for custom metadata.
     - Supports `Content-Type` persistence.
     - Supports `x-amz-copy-source` for copying objects.
+    - Automatically creates new versions if versioning is enabled.
 - **Get Object**: `GET /:bucket/:key`
-    - Supports `Range` header for partial content (e.g., `bytes=0-10`).
-    - Returns persisted metadata and content type.
+    - Supports `versionId` query parameter.
+    - Supports `Range` header for partial content.
 - **Delete Object**: `DELETE /:bucket/:key`
+    - Supports `versionId` query parameter for permanent deletion.
+    - Creates a **Delete Marker** if no `versionId` is specified and versioning is enabled.
 - **Head Object**: `HEAD /:bucket/:key`
+    - Supports `versionId` query parameter.
+- **Object ACL**:
+    - **Get ACL**: `GET /:bucket/:key?acl`
+    - **Put ACL**: `PUT /:bucket/:key?acl` (supports `versionId`)
 
 ### Multipart Upload
 - **Initiate Multipart Upload**: `POST /:bucket/:key?uploads`
@@ -45,7 +65,8 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 ## Requirements
 
 - Swift 6.0 or later
-- macOS 14.0 or later (or Linux equivalent)
+- macOS 14.0 or later (Tested on macOS 14.x and 15.x)
+- Linux (Requires Swift 6.0+ toolchain)
 
 ## Installation
 
