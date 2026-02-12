@@ -39,7 +39,15 @@ struct S3Server {
 
         let router = Router(context: S3RequestContext.self)
         router.middlewares.add(S3RequestLogger())
+        router.middlewares.add(S3MetricsMiddleware(metrics: controller.metrics))
         router.middlewares.add(S3ErrorMiddleware())
+        
+        // Add metrics endpoint before authentication
+        router.get("/metrics") { request, context in
+            let metricsOutput = await controller.metrics.getMetrics()
+            return Response(status: .ok, headers: [.contentType: "text/plain"], body: .init(byteBuffer: ByteBuffer(string: metricsOutput)))
+        }
+        
         router.middlewares.add(S3Authenticator(userStore: metadataStore))
         controller.addRoutes(to: router)
 

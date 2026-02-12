@@ -158,6 +158,9 @@ protocol StorageBackend: Sendable {
     func getBucketLifecycle(bucket: String) async throws -> LifecycleConfiguration?
     func putBucketLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws
     func deleteBucketLifecycle(bucket: String) async throws
+
+    // Garbage collection
+    func cleanupOrphanedUploads(olderThan: TimeInterval) async throws
 }
 
 public struct VersioningConfiguration: Codable, Sendable {
@@ -187,6 +190,16 @@ public struct LifecycleConfiguration: Codable, Sendable {
             }
         }
 
+        public struct NoncurrentVersionExpiration: Codable, Sendable {
+            public let noncurrentDays: Int?
+            public let newerNoncurrentVersions: Int?
+
+            public init(noncurrentDays: Int? = nil, newerNoncurrentVersions: Int? = nil) {
+                self.noncurrentDays = noncurrentDays
+                self.newerNoncurrentVersions = newerNoncurrentVersions
+            }
+        }
+
         public struct Expiration: Codable, Sendable {
             public let days: Int?
             public let date: Date?
@@ -204,12 +217,14 @@ public struct LifecycleConfiguration: Codable, Sendable {
         public let status: Status
         public let filter: Filter
         public let expiration: Expiration?
+        public let noncurrentVersionExpiration: NoncurrentVersionExpiration?
 
-        public init(id: String?, status: Status, filter: Filter, expiration: Expiration?) {
+        public init(id: String?, status: Status, filter: Filter, expiration: Expiration?, noncurrentVersionExpiration: NoncurrentVersionExpiration?) {
             self.id = id
             self.status = status
             self.filter = filter
             self.expiration = expiration
+            self.noncurrentVersionExpiration = noncurrentVersionExpiration
         }
     }
 

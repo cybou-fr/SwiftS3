@@ -4,11 +4,81 @@ import Hummingbird
 import Logging
 import NIO
 
+actor S3Metrics {
+    private var requestCount: Int = 0
+    private var requestDuration: [String: [TimeInterval]] = [:] // method -> durations
+    private var storageBytes: Int64 = 0
+
+    func incrementRequestCount() {
+        requestCount += 1
+    }
+
+    func recordRequestDuration(method: String, duration: TimeInterval) {
+        if requestDuration[method] == nil {
+            requestDuration[method] = []
+        }
+        requestDuration[method]!.append(duration)
+        // Keep only last 100 measurements
+        if requestDuration[method]!.count > 100 {
+            requestDuration[method]!.removeFirst()
+        }
+    }
+
+    func setStorageBytes(_ bytes: Int64) {
+        storageBytes = bytes
+    }
+
+    func getMetrics() -> String {
+        var output = "# HELP s3_requests_total Total number of S3 requests\n"
+        output += "# TYPE s3_requests_total counter\n"
+        output += "s3_requests_total \(requestCount)\n\n"
+
+        output += "# HELP s3_request_duration_seconds Request duration in seconds\n"
+        output += "# TYPE s3_request_duration_seconds histogram\n"
+        for (method, durations) in requestDuration {
+            if let avg = durations.average() {
+                output += "s3_request_duration_seconds{operation=\"\(method)\"} \(avg)\n"
+            }
+        }
+        output += "\n"
+
+        output += "# HELP s3_storage_bytes_total Total storage bytes used\n"
+        output += "# TYPE s3_storage_bytes_total gauge\n"
+        output += "s3_storage_bytes_total \(storageBytes)\n"
+
+        return output
+    }
+}
+
+extension Array where Element == TimeInterval {
+    func average() -> TimeInterval? {
+        guard !isEmpty else { return nil }
+        let sum = reduce(0, +)
+        return sum / TimeInterval(count)
+    }
+}
+
+struct S3MetricsMiddleware: RouterMiddleware {
+    let metrics: S3Metrics
+
+    func handle(_ input: Request, context: S3RequestContext, next: (Request, S3RequestContext) async throws -> Response) async throws -> Response {
+        let start = Date()
+        let response = try await next(input, context)
+        let duration = Date().timeIntervalSince(start)
+        
+        await metrics.incrementRequestCount()
+        await metrics.recordRequestDuration(method: input.method.rawValue, duration: duration)
+        
+        return response
+    }
+}
+
 struct S3Controller {
     let storage: any StorageBackend
     let logger = Logger(label: "SwiftS3.S3")
 
     let evaluator = PolicyEvaluator()
+    let metrics = S3Metrics()
 
     func addRoutes(to router: some Router<S3RequestContext>) {
         // List Buckets (Service)
@@ -389,7 +459,7 @@ struct S3Controller {
             declaredHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
         {
             if declaredHash != etag {
-                try? await storage.deleteObject(
+                _ = try? await storage.deleteObject(
                     bucket: bucket, key: key, versionId: metadataResult.versionId)
                 logger.error(
                     "Checksum mismatch",

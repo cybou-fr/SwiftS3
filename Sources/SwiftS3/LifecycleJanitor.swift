@@ -52,15 +52,28 @@ actor LifecycleJanitor {
                 try await applyRule(rule, to: bucket.name)
             }
         }
+
+        // Perform garbage collection
+        try await performGarbageCollection()
+
         logger.info("Janitor completed lifecycle expiration check")
     }
 
     private func applyRule(_ rule: LifecycleConfiguration.Rule, to bucket: String) async throws {
-        // For now, only simple Expiration Days is implemented
-        guard let expiration = rule.expiration, let days = expiration.days else {
-            return
+        let prefix = rule.filter.prefix ?? ""
+
+        // Handle current version expiration
+        if let expiration = rule.expiration, let days = expiration.days {
+            try await applyCurrentVersionExpiration(rule: rule, bucket: bucket, days: days)
         }
 
+        // Handle noncurrent version expiration
+        if let noncurrentExpiration = rule.noncurrentVersionExpiration {
+            try await applyNoncurrentVersionExpiration(rule: rule, bucket: bucket, noncurrentExpiration: noncurrentExpiration)
+        }
+    }
+
+    private func applyCurrentVersionExpiration(rule: LifecycleConfiguration.Rule, bucket: String, days: Int) async throws {
         let prefix = rule.filter.prefix
         let cutoffDate = Date().addingTimeInterval(-TimeInterval(Double(days) * 24 * 3600))
 
@@ -75,7 +88,7 @@ actor LifecycleJanitor {
             for object in result.objects {
                 if object.lastModified < cutoffDate {
                     logger.info(
-                        "Janitor expiring object",
+                        "Janitor expiring current object",
                         metadata: [
                             "bucket": "\(bucket)",
                             "key": "\(object.key)",
@@ -90,5 +103,78 @@ actor LifecycleJanitor {
             isTruncated = result.isTruncated
             marker = result.nextMarker ?? result.objects.last?.key
         }
+    }
+
+    private func applyNoncurrentVersionExpiration(rule: LifecycleConfiguration.Rule, bucket: String, noncurrentExpiration: LifecycleConfiguration.Rule.NoncurrentVersionExpiration) async throws {
+        let prefix = rule.filter.prefix
+
+        // List all versions for objects matching the prefix
+        var keyMarker: String? = nil
+        var versionIdMarker: String? = nil
+        var isTruncated = true
+
+        while isTruncated {
+            let result = try await storage.listObjectVersions(
+                bucket: bucket, prefix: prefix, delimiter: nil, keyMarker: keyMarker,
+                versionIdMarker: versionIdMarker, maxKeys: pageSize)
+
+            // Group versions by key
+            var versionsByKey: [String: [ObjectMetadata]] = [:]
+            for version in result.versions {
+                versionsByKey[version.key, default: []].append(version)
+            }
+
+            // For each key, sort versions by lastModified (newest first) and expire noncurrent ones
+            for (key, versions) in versionsByKey {
+                let sortedVersions = versions.sorted(by: { $0.lastModified > $1.lastModified })
+
+                // Skip the current version (index 0)
+                for (index, version) in sortedVersions.enumerated() where index > 0 {
+                    var shouldExpire = false
+
+                    // Check noncurrentDays
+                    if let noncurrentDays = noncurrentExpiration.noncurrentDays {
+                        let cutoffDate = Date().addingTimeInterval(-TimeInterval(Double(noncurrentDays) * 24 * 3600))
+                        if version.lastModified < cutoffDate {
+                            shouldExpire = true
+                        }
+                    }
+
+                    // Check newerNoncurrentVersions
+                    if let newerNoncurrentVersions = noncurrentExpiration.newerNoncurrentVersions {
+                        if index >= newerNoncurrentVersions {
+                            shouldExpire = true
+                        }
+                    }
+
+                    if shouldExpire {
+                        logger.info(
+                            "Janitor expiring noncurrent version",
+                            metadata: [
+                                "bucket": "\(bucket)",
+                                "key": "\(key)",
+                                "versionId": "\(version.versionId ?? "null")",
+                                "lastModified": "\(version.lastModified)",
+                                "index": "\(index)",
+                            ])
+                        _ = try await storage.deleteObject(
+                            bucket: bucket, key: key, versionId: version.versionId)
+                    }
+                }
+            }
+
+            isTruncated = result.isTruncated
+            keyMarker = result.nextKeyMarker
+            versionIdMarker = result.nextVersionIdMarker
+        }
+    }
+
+    private func performGarbageCollection() async throws {
+        logger.info("Janitor starting garbage collection")
+        
+        // Cleanup orphaned multipart uploads older than 1 hour
+        try await storage.cleanupOrphanedUploads(olderThan: 3600)
+        
+        logger.info("Janitor completed garbage collection")
     }
 }

@@ -50,7 +50,8 @@ struct ObjectExpirationTests {
                     id: "rule1",
                     status: .enabled,
                     filter: .init(prefix: ""),
-                    expiration: .init(days: 30)
+                    expiration: .init(days: 30),
+                    noncurrentVersionExpiration: nil
                 )
             ])
             try await storage.putBucketLifecycle(bucket: bucket, configuration: lifecycle)
@@ -124,7 +125,8 @@ struct ObjectExpirationTests {
                     id: "rule-prefix",
                     status: .enabled,
                     filter: .init(prefix: "logs/"),
-                    expiration: .init(days: 30)
+                    expiration: .init(days: 30),
+                    noncurrentVersionExpiration: nil
                 )
             ])
             try await storage.putBucketLifecycle(bucket: bucket, configuration: lifecycle)
@@ -141,6 +143,79 @@ struct ObjectExpirationTests {
             let remaining = try await storage.getObjectMetadata(
                 bucket: bucket, key: key2, versionId: nil)
             #expect(remaining.key == key2)
+
+            try await metadataStore.shutdown()
+        } catch {
+            throw error
+        }
+
+        try await threadPool.shutdownGracefully()
+        try await elg.shutdownGracefully()
+        try? FileManager.default.removeItem(atPath: storagePath)
+    }
+
+    @Test("LifecycleJanitor: Deletes noncurrent versions after days")
+    func testJanitorDeletesNoncurrentVersions() async throws {
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
+        let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString
+        ).path
+        try? FileManager.default.createDirectory(
+            atPath: storagePath, withIntermediateDirectories: true)
+
+        do {
+            let metadataStore = try await SQLMetadataStore.create(
+                path: storagePath + "/metadata.sqlite",
+                on: elg,
+                threadPool: threadPool
+            )
+            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+
+            let bucket = "versioned-bucket"
+            try await storage.createBucket(name: bucket, owner: "admin")
+            try await storage.putBucketVersioning(bucket: bucket, configuration: VersioningConfiguration(status: .enabled))
+
+            // Create multiple versions of the same object
+            let key = "test-object.txt"
+
+            // Version 1 (oldest)
+            _ = try await storage.putObject(
+                bucket: bucket, key: key, data: [ByteBuffer(string: "version 1")].async, size: 9,
+                metadata: nil, owner: "admin")
+            let oldDate = Date().addingTimeInterval(-60 * 60 * 24 * 40) // 40 days ago
+            var meta1 = try await metadataStore.getMetadata(bucket: bucket, key: key, versionId: nil)
+            meta1.lastModified = oldDate
+            try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: meta1)
+
+            // Version 2 (current, recent)
+            _ = try await storage.putObject(
+                bucket: bucket, key: key, data: [ByteBuffer(string: "version 2")].async, size: 9,
+                metadata: nil, owner: "admin")
+
+            // Add lifecycle rule: expire noncurrent versions after 30 days
+            let lifecycle = LifecycleConfiguration(rules: [
+                .init(
+                    id: "noncurrent-rule",
+                    status: .enabled,
+                    filter: .init(prefix: ""),
+                    expiration: nil,
+                    noncurrentVersionExpiration: .init(noncurrentDays: 30, newerNoncurrentVersions: nil)
+                )
+            ])
+            try await storage.putBucketLifecycle(bucket: bucket, configuration: lifecycle)
+
+            // Run Janitor
+            let janitor = LifecycleJanitor(storage: storage)
+            try await janitor.performExpiration()
+
+            // Verify: noncurrent version (v1) is deleted, current version (v2) remains
+            let versions = try await storage.listObjectVersions(bucket: bucket, prefix: nil, delimiter: nil, keyMarker: nil, versionIdMarker: nil, maxKeys: 100)
+            #expect(versions.versions.count == 1)
+            #expect(versions.versions[0].key == key)
+            #expect(versions.versions[0].versionId != meta1.versionId) // Not the old version
 
             try await metadataStore.shutdown()
         } catch {

@@ -454,6 +454,18 @@ struct XML {
                             return expXML
                         }
                     }
+                    if let noncurrentExpiration = rule.noncurrentVersionExpiration {
+                        ruleXML += XMLBuilder.element("NoncurrentVersionExpiration") {
+                            var noncurrentXML = ""
+                            if let noncurrentDays = noncurrentExpiration.noncurrentDays {
+                                noncurrentXML += XMLBuilder.element("NoncurrentDays", String(noncurrentDays))
+                            }
+                            if let newerVersions = noncurrentExpiration.newerNoncurrentVersions {
+                                noncurrentXML += XMLBuilder.element("NewerNoncurrentVersions", String(newerVersions))
+                            }
+                            return noncurrentXML
+                        }
+                    }
                     return ruleXML
                 }
             }.joined()
@@ -469,6 +481,9 @@ struct XML {
         let prefixPattern = "<Prefix>(.*?)</Prefix>"
         let expirationPattern = "<Expiration>(.*?)</Expiration>"
         let daysPattern = "<Days>(\\d+)</Days>"
+        let noncurrentExpirationPattern = "<NoncurrentVersionExpiration>(.*?)</NoncurrentVersionExpiration>"
+        let noncurrentDaysPattern = "<NoncurrentDays>(\\d+)</NoncurrentDays>"
+        let newerNoncurrentVersionsPattern = "<NewerNoncurrentVersions>(\\d+)</NewerNoncurrentVersions>"
 
         let ruleRegex = try! NSRegularExpression(
             pattern: rulePattern, options: [.dotMatchesLineSeparators])
@@ -478,6 +493,10 @@ struct XML {
         let expirationRegex = try! NSRegularExpression(
             pattern: expirationPattern, options: [.dotMatchesLineSeparators])
         let daysRegex = try! NSRegularExpression(pattern: daysPattern, options: [])
+        let noncurrentExpirationRegex = try! NSRegularExpression(
+            pattern: noncurrentExpirationPattern, options: [.dotMatchesLineSeparators])
+        let noncurrentDaysRegex = try! NSRegularExpression(pattern: noncurrentDaysPattern, options: [])
+        let newerNoncurrentVersionsRegex = try! NSRegularExpression(pattern: newerNoncurrentVersionsPattern, options: [])
 
         let nsString = xml as NSString
         let matches = ruleRegex.matches(
@@ -531,12 +550,43 @@ struct XML {
                 expiration = LifecycleConfiguration.Rule.Expiration(days: days)
             }
 
+            var noncurrentVersionExpiration: LifecycleConfiguration.Rule.NoncurrentVersionExpiration? = nil
+            if let noncurrentMatch = noncurrentExpirationRegex.firstMatch(
+                in: ruleContent, options: [],
+                range: NSRange(location: 0, length: ruleNsString.length))
+            {
+                let noncurrentContent = ruleNsString.substring(with: noncurrentMatch.range(at: 1))
+                let noncurrentNsString = noncurrentContent as NSString
+
+                var noncurrentDays: Int? = nil
+                if let noncurrentDaysMatch = noncurrentDaysRegex.firstMatch(
+                    in: noncurrentContent, options: [],
+                    range: NSRange(location: 0, length: noncurrentNsString.length))
+                {
+                    noncurrentDays = Int(noncurrentNsString.substring(with: noncurrentDaysMatch.range(at: 1)))
+                }
+
+                var newerNoncurrentVersions: Int? = nil
+                if let newerMatch = newerNoncurrentVersionsRegex.firstMatch(
+                    in: noncurrentContent, options: [],
+                    range: NSRange(location: 0, length: noncurrentNsString.length))
+                {
+                    newerNoncurrentVersions = Int(noncurrentNsString.substring(with: newerMatch.range(at: 1)))
+                }
+
+                if noncurrentDays != nil || newerNoncurrentVersions != nil {
+                    noncurrentVersionExpiration = LifecycleConfiguration.Rule.NoncurrentVersionExpiration(
+                        noncurrentDays: noncurrentDays, newerNoncurrentVersions: newerNoncurrentVersions)
+                }
+            }
+
             rules.append(
                 LifecycleConfiguration.Rule(
                     id: id,
                     status: status,
                     filter: LifecycleConfiguration.Rule.Filter(prefix: prefix),
-                    expiration: expiration
+                    expiration: expiration,
+                    noncurrentVersionExpiration: noncurrentVersionExpiration
                 ))
         }
 

@@ -1,6 +1,7 @@
 import Crypto
 import Foundation
 import Hummingbird
+import Logging
 import NIO
 import _NIOFileSystem
 
@@ -42,6 +43,7 @@ actor FileSystemStorage: StorageBackend {
     let rootPath: FilePath
     let fileSystem = FileSystem.shared
     let metadataStore: MetadataStore
+    let logger = Logger(label: "SwiftS3.FileSystemStorage")
 
     init(rootPath: String, metadataStore: MetadataStore? = nil) {
         self.rootPath = FilePath(rootPath)
@@ -338,7 +340,7 @@ actor FileSystemStorage: StorageBackend {
     func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
         var deleted: [String] = []
         for key in keys {
-            try? await deleteObject(bucket: bucket, key: key, versionId: nil)  // Default to null/latest for bulk delete for now
+            _ = try? await deleteObject(bucket: bucket, key: key, versionId: nil)  // Default to null/latest for bulk delete for now
             deleted.append(key)
         }
         return deleted
@@ -606,6 +608,61 @@ actor FileSystemStorage: StorageBackend {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
         _ = try? await fileSystem.removeItem(
             at: uPath, strategy: .platformDefault, recursively: true)
+    }
+
+    func cleanupOrphanedUploads(olderThan: TimeInterval) async throws {
+        let buckets = try await listBuckets()
+        let cutoffDate = Date().addingTimeInterval(-olderThan)
+
+        for bucket in buckets {
+            let uploadsDir = bucketPath(bucket.name).appending(".uploads")
+            
+            // Check if uploads directory exists
+            guard try await fileSystem.exists(at: uploadsDir) else { continue }
+            
+            // List all upload directories
+            let handle = try await fileSystem.openDirectory(atPath: uploadsDir)
+            do {
+                for try await entry in handle.listContents() {
+                    if entry.type == .directory {
+                        let uploadPath = uploadsDir.appending(entry.name)
+                        let infoPath = uploadPath.appending("info.json")
+                        
+                        // Check if info.json exists and is old
+                        if try await fileSystem.exists(at: infoPath) {
+                            do {
+                                let infoData = try await fileSystem.readAll(at: infoPath)
+                                let info = try JSONDecoder().decode(UploadInfo.self, from: infoData)
+                                
+                                // For now, just check if the directory is old (by checking the info file modification time)
+                                // In a real implementation, we'd track creation time in the info
+                                if let attributes = try await fileSystem.info(forFileAt: infoPath) {
+                                    let mtime = attributes.lastDataModificationTime
+                                    let modTime = Date(
+                                        timeIntervalSince1970: TimeInterval(mtime.seconds) + TimeInterval(mtime.nanoseconds) / 1_000_000_000)
+                                    if modTime < cutoffDate {
+                                        logger.info("Cleaning up orphaned multipart upload", metadata: [
+                                            "bucket": Logger.MetadataValue.string(bucket.name),
+                                            "uploadId": Logger.MetadataValue.string(entry.name.string),
+                                            "age": Logger.MetadataValue.string("\(Date().timeIntervalSince(modTime))")
+                                        ])
+                                        _ = try? await fileSystem.removeItem(at: uploadPath, strategy: .platformDefault, recursively: true)
+                                    }
+                                }
+                            } catch {
+                                // If we can't read the info, it might be corrupted, clean it up
+                                logger.warning("Cleaning up corrupted multipart upload", metadata: [
+                                    "bucket": Logger.MetadataValue.string(bucket.name),
+                                    "uploadId": Logger.MetadataValue.string(entry.name.string)
+                                ])
+                                _ = try? await fileSystem.removeItem(at: uploadPath, strategy: .platformDefault, recursively: true)
+                            }
+                        }
+                    }
+                }
+            }
+            try await handle.close()
+        }
     }
 
     // MARK: - Bucket Policy
