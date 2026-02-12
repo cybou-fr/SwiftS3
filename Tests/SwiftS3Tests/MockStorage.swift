@@ -17,10 +17,40 @@ actor MockStorage: StorageBackend {
     private var lifecycleConfigs: [String: LifecycleConfiguration] = [:] // bucket -> config
     private var versioningConfigs: [String: VersioningConfiguration] = [:] // bucket -> config
 
+    // Multipart upload storage
+    private var multipartUploads: [String: MultipartUpload] = [:] // uploadId -> upload
+    private var uploadParts: [String: [Int: Data]] = [:] // uploadId -> partNumber -> data
+    private var nextUploadId = 1
+
     // Test helpers
     nonisolated(unsafe) var shouldFailOnCreateBucket = false
     nonisolated(unsafe) var shouldFailOnPutObject = false
     nonisolated(unsafe) var shouldFailOnGetObject = false
+    nonisolated(unsafe) var shouldFailOnDeleteObject = false
+    nonisolated(unsafe) var shouldFailOnListObjects = false
+    nonisolated(unsafe) var shouldFailOnCreateMultipartUpload = false
+    nonisolated(unsafe) var shouldFailOnUploadPart = false
+    nonisolated(unsafe) var shouldFailOnCompleteMultipartUpload = false
+    nonisolated(unsafe) var shouldFailOnGetBucketPolicy = false
+    nonisolated(unsafe) var shouldFailOnPutBucketPolicy = false
+    nonisolated(unsafe) var shouldFailOnGetACL = false
+    nonisolated(unsafe) var shouldFailOnPutACL = false
+    nonisolated(unsafe) var shouldFailOnGetTags = false
+    nonisolated(unsafe) var shouldFailOnPutTags = false
+    nonisolated(unsafe) var shouldFailOnGetLifecycle = false
+    nonisolated(unsafe) var shouldFailOnPutLifecycle = false
+
+    // Simulate delays for concurrent testing
+    nonisolated(unsafe) var operationDelay: TimeInterval = 0
+
+    private struct MultipartUpload {
+        let bucket: String
+        let key: String
+        let uploadId: String
+        let owner: String
+        let metadata: [String: String]?
+        var parts: [Int: String] = [:] // partNumber -> eTag
+    }
 
     func createBucket(name: String, owner: String) async throws {
         if shouldFailOnCreateBucket {
@@ -240,6 +270,14 @@ actor MockStorage: StorageBackend {
 
     // ACL methods
     func getACL(bucket: String, key: String?, versionId: String?) async throws -> AccessControlPolicy {
+        if shouldFailOnGetACL {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         if let key = key {
             guard let bucketAcls = acls[bucket], let acl = bucketAcls[key] else {
                 throw S3Error.noSuchKey
@@ -254,6 +292,14 @@ actor MockStorage: StorageBackend {
     }
 
     func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy) async throws {
+        if shouldFailOnPutACL {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         if let key = key {
             if acls[bucket] == nil {
                 acls[bucket] = [:]
@@ -266,6 +312,14 @@ actor MockStorage: StorageBackend {
 
     // Policy methods
     func getBucketPolicy(bucket: String) async throws -> BucketPolicy {
+        if shouldFailOnGetBucketPolicy {
+            throw S3Error.noSuchBucketPolicy
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         guard let policy = policies[bucket] else {
             throw S3Error.noSuchBucketPolicy
         }
@@ -273,6 +327,18 @@ actor MockStorage: StorageBackend {
     }
 
     func putBucketPolicy(bucket: String, policy: BucketPolicy) async throws {
+        if shouldFailOnPutBucketPolicy {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
+        guard buckets.contains(bucket) else {
+            throw S3Error.noSuchBucket
+        }
+
         policies[bucket] = policy
     }
 
@@ -291,6 +357,14 @@ actor MockStorage: StorageBackend {
 
     // Tagging methods
     func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag] {
+        if shouldFailOnGetTags {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         if let key = key {
             return tags[bucket]?[key] ?? []
         } else {
@@ -299,6 +373,14 @@ actor MockStorage: StorageBackend {
     }
 
     func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws {
+        if shouldFailOnPutTags {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         if let key = key {
             if self.tags[bucket] == nil {
                 self.tags[bucket] = [:]
@@ -319,10 +401,26 @@ actor MockStorage: StorageBackend {
 
     // Lifecycle methods
     func getBucketLifecycle(bucket: String) async throws -> LifecycleConfiguration? {
+        if shouldFailOnGetLifecycle {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         return lifecycleConfigs[bucket]
     }
 
     func putBucketLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws {
+        if shouldFailOnPutLifecycle {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
         lifecycleConfigs[bucket] = configuration
     }
 
@@ -332,22 +430,137 @@ actor MockStorage: StorageBackend {
 
     // Multipart upload methods
     func createMultipartUpload(bucket: String, key: String, metadata: [String: String]?, owner: String) async throws -> String {
-        throw S3Error.notImplemented
+        if shouldFailOnCreateMultipartUpload {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
+        guard buckets.contains(bucket) else {
+            throw S3Error.noSuchBucket
+        }
+
+        let uploadId = "upload-\(nextUploadId)"
+        nextUploadId += 1
+
+        let upload = MultipartUpload(
+            bucket: bucket,
+            key: key,
+            uploadId: uploadId,
+            owner: owner,
+            metadata: metadata
+        )
+
+        multipartUploads[uploadId] = upload
+        uploadParts[uploadId] = [:]
+
+        return uploadId
     }
 
     func uploadPart<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, uploadId: String, partNumber: Int, data: consuming Stream,
         size: Int64?
     ) async throws -> String where Stream.Element == ByteBuffer {
-        throw S3Error.notImplemented
+        if shouldFailOnUploadPart {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
+        guard var upload = multipartUploads[uploadId], upload.bucket == bucket, upload.key == key else {
+            throw S3Error.noSuchUpload
+        }
+
+        // Collect data
+        var collectedData = Data()
+        for try await var buffer in data {
+            collectedData.append(contentsOf: buffer.readableBytesView)
+        }
+
+        // Store part data
+        if uploadParts[uploadId] == nil {
+            uploadParts[uploadId] = [:]
+        }
+        uploadParts[uploadId]![partNumber] = collectedData
+
+        // Generate mock ETag for the part
+        let eTag = "\"part-\(partNumber)-\(String(format: "%02x", collectedData.hashValue))\""
+        upload.parts[partNumber] = eTag
+        multipartUploads[uploadId] = upload
+
+        return eTag
     }
 
     func completeMultipartUpload(bucket: String, key: String, uploadId: String, parts: [PartInfo]) async throws -> String {
-        throw S3Error.notImplemented
+        if shouldFailOnCompleteMultipartUpload {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
+        guard var upload = multipartUploads[uploadId], upload.bucket == bucket, upload.key == key else {
+            throw S3Error.noSuchUpload
+        }
+
+        // Combine all parts
+        var combinedData = Data()
+        for part in parts.sorted(by: { $0.partNumber < $1.partNumber }) {
+            if let partData = uploadParts[uploadId]?[part.partNumber] {
+                combinedData.append(partData)
+            } else {
+                throw S3Error.invalidPart
+            }
+        }
+
+        // Create the final object
+        let actualSize = Int64(combinedData.count)
+        let eTag = "\"\(String(format: "%02x", combinedData.hashValue))\""
+
+        let objectMetadata = ObjectMetadata(
+            key: key,
+            size: actualSize,
+            lastModified: Date(),
+            eTag: eTag,
+            contentType: upload.metadata?["Content-Type"],
+            customMetadata: upload.metadata?.filter { !$0.key.lowercased().hasPrefix("x-amz-meta-") } ?? [:],
+            owner: upload.owner,
+            versionId: "null",
+            isLatest: true,
+            isDeleteMarker: false
+        )
+
+        if objects[bucket] == nil {
+            objects[bucket] = [:]
+            objectData[bucket] = [:]
+        }
+        objects[bucket]![key] = objectMetadata
+        objectData[bucket]![key] = combinedData
+
+        // Clean up multipart upload
+        multipartUploads.removeValue(forKey: uploadId)
+        uploadParts.removeValue(forKey: uploadId)
+
+        return eTag
     }
 
     func abortMultipartUpload(bucket: String, key: String, uploadId: String) async throws {
-        throw S3Error.notImplemented
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
+        guard let upload = multipartUploads[uploadId], upload.bucket == bucket, upload.key == key else {
+            throw S3Error.noSuchUpload
+        }
+
+        // Clean up multipart upload
+        multipartUploads.removeValue(forKey: uploadId)
+        uploadParts.removeValue(forKey: uploadId)
     }
 
     func cleanupOrphanedUploads(olderThan: TimeInterval) async throws {
