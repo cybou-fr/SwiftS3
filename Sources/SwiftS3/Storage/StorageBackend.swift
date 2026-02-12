@@ -31,7 +31,7 @@ struct ObjectMetadata: Sendable {
     }
 }
 
-struct S3Tag: Sendable, Codable, Equatable {
+public struct S3Tag: Sendable, Codable, Equatable {
     let key: String
     let value: String
 
@@ -169,9 +169,11 @@ public struct VersioningConfiguration: Codable, Sendable {
         case suspended = "Suspended"
     }
     public let status: Status
+    public let mfaDelete: Bool?
 
-    public init(status: Status) {
+    public init(status: Status, mfaDelete: Bool? = nil) {
         self.status = status
+        self.mfaDelete = mfaDelete
     }
 }
 
@@ -184,9 +186,11 @@ public struct LifecycleConfiguration: Codable, Sendable {
 
         public struct Filter: Codable, Sendable {
             public let prefix: String?
-            // Tag filter could be added later
-            public init(prefix: String?) {
+            public let tag: S3Tag?
+
+            public init(prefix: String?, tag: S3Tag? = nil) {
                 self.prefix = prefix
+                self.tag = tag
             }
         }
 

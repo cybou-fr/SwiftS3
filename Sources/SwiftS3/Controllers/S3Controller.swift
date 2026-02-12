@@ -209,12 +209,20 @@ struct S3Controller {
         let xmlStr = String(buffer: buffer)
 
         // Simple manual parsing for VersioningConfiguration
-        // <VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>
+        // <VersioningConfiguration><Status>Enabled</Status><MfaDelete>Enabled</MfaDelete></VersioningConfiguration>
         var status: VersioningConfiguration.Status = .suspended
         if xmlStr.contains(">Enabled<") {
             status = .enabled
         }
-        let config = VersioningConfiguration(status: status)
+        
+        var mfaDelete: Bool? = nil
+        if xmlStr.contains("<MfaDelete>Enabled</MfaDelete>") {
+            mfaDelete = true
+        } else if xmlStr.contains("<MfaDelete>Disabled</MfaDelete>") {
+            mfaDelete = false
+        }
+        
+        let config = VersioningConfiguration(status: status, mfaDelete: mfaDelete)
 
         try await storage.putBucketVersioning(bucket: bucket, configuration: config)
         logger.info("Bucket versioning updated", metadata: ["bucket": "\(bucket)"])
@@ -560,6 +568,17 @@ struct S3Controller {
                 bucket: bucket, key: nil, action: "s3:DeleteObject", request: request,
                 context: context)
 
+            // Check MFA delete requirement
+            if let versioning = try await storage.getBucketVersioning(bucket: bucket),
+               versioning.mfaDelete == true {
+                // MFA delete is enabled, check for MFA header
+                guard let mfaHeader = request.headers[HTTPField.Name("x-amz-mfa")!],
+                      !mfaHeader.isEmpty else {
+                    throw S3Error.accessDenied
+                }
+                // In a real implementation, we'd validate the MFA code
+            }
+
             var buffer = ByteBuffer()
             for try await var chunk in request.body {
                 buffer.writeBuffer(&chunk)
@@ -687,6 +706,18 @@ struct S3Controller {
         try await checkAccess(
             bucket: bucket, key: key, action: "s3:DeleteObject", request: request, context: context)
         let query = parseQuery(request.uri.query)
+
+        // Check MFA delete requirement
+        if let versioning = try await storage.getBucketVersioning(bucket: bucket),
+           versioning.mfaDelete == true {
+            // MFA delete is enabled, check for MFA header
+            guard let mfaHeader = request.headers[HTTPField.Name("x-amz-mfa")!],
+                  !mfaHeader.isEmpty else {
+                throw S3Error.accessDenied
+            }
+            // In a real implementation, we'd validate the MFA code
+            // For now, just check that it's provided
+        }
 
         // Check if this is a Tagging operation
         if request.uri.queryParameters.get("tagging") != nil {

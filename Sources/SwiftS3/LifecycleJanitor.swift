@@ -75,18 +75,26 @@ actor LifecycleJanitor {
 
     private func applyCurrentVersionExpiration(rule: LifecycleConfiguration.Rule, bucket: String, days: Int) async throws {
         let prefix = rule.filter.prefix
+        let tagFilter = rule.filter.tag
         let cutoffDate = Date().addingTimeInterval(-TimeInterval(Double(days) * 24 * 3600))
 
-        var marker: String? = nil
+        var continuationToken: String? = nil
         var isTruncated = true
 
         while isTruncated {
             let result = try await storage.listObjects(
-                bucket: bucket, prefix: prefix, delimiter: nil, marker: marker,
-                continuationToken: nil, maxKeys: pageSize)
+                bucket: bucket, prefix: prefix, delimiter: nil, marker: nil,
+                continuationToken: continuationToken, maxKeys: pageSize)
 
             for object in result.objects {
-                if object.lastModified < cutoffDate {
+                // Check if object matches tag filter
+                var matchesTagFilter = true
+                if let tagFilter = tagFilter {
+                    let objectTags = try await storage.getTags(bucket: bucket, key: object.key, versionId: nil)
+                    matchesTagFilter = objectTags.contains(where: { $0.key == tagFilter.key && $0.value == tagFilter.value })
+                }
+
+                if matchesTagFilter && object.lastModified < cutoffDate {
                     logger.info(
                         "Janitor expiring current object",
                         metadata: [
@@ -101,12 +109,13 @@ actor LifecycleJanitor {
             }
 
             isTruncated = result.isTruncated
-            marker = result.nextMarker ?? result.objects.last?.key
+            continuationToken = result.nextContinuationToken
         }
     }
 
     private func applyNoncurrentVersionExpiration(rule: LifecycleConfiguration.Rule, bucket: String, noncurrentExpiration: LifecycleConfiguration.Rule.NoncurrentVersionExpiration) async throws {
         let prefix = rule.filter.prefix
+        let tagFilter = rule.filter.tag
 
         // List all versions for objects matching the prefix
         var keyMarker: String? = nil
@@ -130,6 +139,15 @@ actor LifecycleJanitor {
 
                 // Skip the current version (index 0)
                 for (index, version) in sortedVersions.enumerated() where index > 0 {
+                    // Check if version matches tag filter
+                    var matchesTagFilter = true
+                    if let tagFilter = tagFilter {
+                        let versionTags = try await storage.getTags(bucket: bucket, key: key, versionId: version.versionId)
+                        matchesTagFilter = versionTags.contains(where: { $0.key == tagFilter.key && $0.value == tagFilter.value })
+                    }
+
+                    if !matchesTagFilter { continue }
+
                     var shouldExpire = false
 
                     // Check noncurrentDays

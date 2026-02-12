@@ -1,44 +1,68 @@
-# SwiftS3 Modernization Roadmap
+# SwiftS3 Enterprise Roadmap
 
-This document outlines the roadmap to elevate SwiftS3 to modern standards, leveraging best practices from industry leaders like MinIO and AWS S3.
+This document outlines the next phase of SwiftS3 development, focusing on enterprise-grade features to compete with commercial S3-compatible solutions like MinIO and AWS S3.
 
-## 1. Core Architecture Modernization (Performance & Scalability)
-**Goal:** Transition from a simple synchronous file server to a high-performance, non-blocking object engine.
+## 1. Advanced Storage & Data Protection
 
-- [x] **Non-blocking I/O**: Replace `FileManager` (blocking) with `SwiftNIO`'s `NIOFileSystem` for data path and metadata operations.
-- [x] **Metadata Abstraction**: Refactor storage to use `MetadataStore` protocol.
-- [x] **Metadata Engine**: Implement `SQLMetadataStore` using SQLite to replace sidecar files. This is critical for `ListObjects` performance.
-- [x] **Streaming Data**: Fully streaming data paths for Uploads (Put) and Downloads (Get) using `AsyncStream` and `NIOFileSystem`.
+**Goal:** Enterprise-grade data protection, durability, and availability.
 
-## 2. Security & Identity (IAM)
-**Goal:** Enterprise-grade security and access control.
+- [ ] **Erasure Coding**: Implement erasure coding for data protection and recovery (like MinIO).
+- [ ] **Bitrot Protection**: Detect and repair data corruption using checksums.
+- [ ] **Storage Classes**: Support multiple storage tiers (Hot, Warm, Cold, Archive) with automatic tiering.
+- [ ] **Cross-Region Replication**: Replicate objects across multiple regions for disaster recovery.
+- [ ] **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
 
-- [x] **Multi-User Identity**: Support multiple users via SQLite database.
-- [x] **Bucket Policies**: Implement JSON-based IAM policies for granular bucket/prefix access control.
-- [x] **ACLs**: Support basic Canned ACLs (private, public-read).
-- [x] **Signatures**: Verify `x-amz-content-sha256` payload checksums (currently only signature header is checked).
+## 2. Advanced Security & Compliance
 
-## 3. S3 Feature Parity (Compatibility)
-**Goal:** Support the "Standard" S3 feature set expected by SDKs (boto3, AWS JS SDK).
+**Goal:** Enterprise security features and compliance capabilities.
 
-- [x] **Versioning**: Support object versioning (keeping multiple variants of an object).
-- [x] **Tagging**: Object and Bucket tagging support.
-- [/] **Lifecycle Rules**: Expiration (Days) implemented. Next: Noncurrent version expiration, pagination for large buckets, and Prefix/Tag filtering improvements.
-- [x] **Presigned URLs**: Full support for query-parameter based authentication.
-- [ ] **MFA Delete**: Support Multi-Factor Authentication for sensitive operations.
+- [ ] **SSE-KMS**: Server-side encryption with customer-managed keys.
+- [ ] **Client-Side Encryption**: Support for client-side encryption before upload.
+- [ ] **VPC-Only Access**: Restrict access to specific VPCs and private networks.
+- [ ] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
+- [ ] **Advanced Auditing**: Detailed audit logs with compliance reporting.
 
-## 4. Reliability & Operations
-**Goal:** Production readiness.
+## 3. Event-Driven Architecture
 
-- [x] **Structured Logging**: JSON logs for observability.
-- [ ] **Metrics**: Prometheus-compatible metrics endpoint (RPS, Latency, Storage usage).
-- [x] **Checksum Verification**: Implement CRC32C/SHA256 checksums on upload/download.
-- [ ] **Garbage Collection**: Cleanup of orphaned files or failed multipart uploads (Janitor expansion).
+**Goal:** Enable event-driven workflows and integrations.
 
-## 5. Development Workflow Improvements
-**Goal:** Ensure faster iteration cycles and better testing.
+- [ ] **Event Notifications**: S3-compatible event notifications (bucket notifications, object events).
+- [ ] **Webhook Support**: HTTP webhook notifications for object operations.
+- [ ] **Lambda Integration**: Serverless function triggers on S3 events.
+- [ ] **Message Queue Integration**: SNS/SQS-style messaging for events.
 
-- [x] **Unit Tests**: Coverage for edge cases (`FileSystemStorage` logic).
-- [x] **Integration Tests**: Tests for real S3 client validation using `HummingbirdTesting`.
-- [/] **E2E Tests**: Validate with real AWS CLI and S3 SDKs (ongoing).
----
+## 4. Analytics & Insights
+
+**Goal:** Provide storage analytics and operational insights.
+
+- [ ] **Storage Analytics**: Usage analytics, access patterns, and cost optimization insights.
+- [ ] **Access Analyzer**: Security analysis for bucket access patterns.
+- [ ] **Inventory Reports**: Automated inventory generation with metadata.
+- [ ] **Performance Metrics**: Detailed performance monitoring and optimization.
+
+## 5. Advanced Operations
+
+**Goal:** Large-scale operations and automation.
+
+- [ ] **Batch Operations**: Large-scale batch operations on objects (like AWS S3 Batch).
+- [ ] **S3 Select**: SQL queries directly on objects without downloading.
+- [ ] **Multipart Upload Optimization**: Enhanced multipart upload with better concurrency.
+- [ ] **Transfer Acceleration**: Optimized data transfer for global users.
+
+## 6. Multi-Site & Federation
+
+**Goal:** Distributed deployments and federation capabilities.
+
+- [ ] **Multi-Site Federation**: Active-active replication across multiple sites.
+- [ ] **Global Namespace**: Unified namespace across multiple clusters.
+- [ ] **Load Balancing**: Intelligent load balancing for distributed deployments.
+- [ ] **Site Affinity**: Data locality and site-aware routing.
+
+## 7. Developer Experience
+
+**Goal:** Enhanced developer tools and integrations.
+
+- [ ] **SDK Generation**: Auto-generate SDKs for multiple languages.
+- [ ] **API Compatibility Testing**: Automated testing against AWS S3 API specification.
+- [ ] **Operator Framework**: Kubernetes operator for automated deployment and management.
+- [ ] **Advanced CLI**: Enhanced command-line interface with scripting capabilities.

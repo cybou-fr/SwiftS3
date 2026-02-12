@@ -287,12 +287,16 @@ struct XML {
             root: "VersioningConfiguration",
             attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
         ) {
+            var xml = ""
             if let config = config {
-                return XMLBuilder.element("Status", config.status.rawValue)
+                xml += XMLBuilder.element("Status", config.status.rawValue)
+                if let mfaDelete = config.mfaDelete {
+                    xml += XMLBuilder.element("MfaDelete", mfaDelete ? "Enabled" : "Disabled")
+                }
             } else {
-                return XMLBuilder.element(
-                    "Status", VersioningConfiguration.Status.suspended.rawValue)
+                xml += XMLBuilder.element("Status", VersioningConfiguration.Status.suspended.rawValue)
             }
+            return xml
         }.content
     }
     static func listVersionsResult(
@@ -434,7 +438,16 @@ struct XML {
                         ruleXML += XMLBuilder.element("ID", id)
                     }
                     ruleXML += XMLBuilder.element("Filter") {
-                        XMLBuilder.element("Prefix", rule.filter.prefix ?? "")
+                        var filterXML = ""
+                        if let prefix = rule.filter.prefix {
+                            filterXML += XMLBuilder.element("Prefix", prefix)
+                        }
+                        if let tag = rule.filter.tag {
+                            filterXML += XMLBuilder.element("Tag") {
+                                XMLBuilder.element("Key", tag.key) + XMLBuilder.element("Value", tag.value)
+                            }
+                        }
+                        return filterXML
                     }
                     ruleXML += XMLBuilder.element("Status", rule.status.rawValue)
                     if let expiration = rule.expiration {
@@ -479,6 +492,9 @@ struct XML {
         let idPattern = "<ID>(.*?)</ID>"
         let statusPattern = "<Status>(.*?)</Status>"
         let prefixPattern = "<Prefix>(.*?)</Prefix>"
+        let tagPattern = "<Tag>(.*?)</Tag>"
+        let tagKeyPattern = "<Key>(.*?)</Key>"
+        let tagValuePattern = "<Value>(.*?)</Value>"
         let expirationPattern = "<Expiration>(.*?)</Expiration>"
         let daysPattern = "<Days>(\\d+)</Days>"
         let noncurrentExpirationPattern = "<NoncurrentVersionExpiration>(.*?)</NoncurrentVersionExpiration>"
@@ -490,6 +506,9 @@ struct XML {
         let idRegex = try! NSRegularExpression(pattern: idPattern, options: [])
         let statusRegex = try! NSRegularExpression(pattern: statusPattern, options: [])
         let prefixRegex = try! NSRegularExpression(pattern: prefixPattern, options: [])
+        let tagRegex = try! NSRegularExpression(pattern: tagPattern, options: [.dotMatchesLineSeparators])
+        let tagKeyRegex = try! NSRegularExpression(pattern: tagKeyPattern, options: [])
+        let tagValueRegex = try! NSRegularExpression(pattern: tagValuePattern, options: [])
         let expirationRegex = try! NSRegularExpression(
             pattern: expirationPattern, options: [.dotMatchesLineSeparators])
         let daysRegex = try! NSRegularExpression(pattern: daysPattern, options: [])
@@ -530,6 +549,35 @@ struct XML {
                 range: NSRange(location: 0, length: ruleNsString.length))
             {
                 prefix = ruleNsString.substring(with: prefixMatch.range(at: 1))
+            }
+
+            var tag: S3Tag? = nil
+            if let tagMatch = tagRegex.firstMatch(
+                in: ruleContent, options: [],
+                range: NSRange(location: 0, length: ruleNsString.length))
+            {
+                let tagContent = ruleNsString.substring(with: tagMatch.range(at: 1))
+                let tagNsString = tagContent as NSString
+
+                var key: String? = nil
+                if let keyMatch = tagKeyRegex.firstMatch(
+                    in: tagContent, options: [],
+                    range: NSRange(location: 0, length: tagNsString.length))
+                {
+                    key = tagNsString.substring(with: keyMatch.range(at: 1))
+                }
+
+                var value: String? = nil
+                if let valueMatch = tagValueRegex.firstMatch(
+                    in: tagContent, options: [],
+                    range: NSRange(location: 0, length: tagNsString.length))
+                {
+                    value = tagNsString.substring(with: valueMatch.range(at: 1))
+                }
+
+                if let key = key, let value = value {
+                    tag = S3Tag(key: key, value: value)
+                }
             }
 
             var expiration: LifecycleConfiguration.Rule.Expiration? = nil
@@ -584,7 +632,7 @@ struct XML {
                 LifecycleConfiguration.Rule(
                     id: id,
                     status: status,
-                    filter: LifecycleConfiguration.Rule.Filter(prefix: prefix),
+                    filter: LifecycleConfiguration.Rule.Filter(prefix: prefix, tag: tag),
                     expiration: expiration,
                     noncurrentVersionExpiration: noncurrentVersionExpiration
                 ))
