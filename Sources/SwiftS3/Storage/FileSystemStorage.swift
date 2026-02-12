@@ -39,12 +39,15 @@ extension FileSystem {
     }
 }
 
+/// File system-based implementation of the StorageBackend protocol.
+/// Manages object storage on the local file system with metadata persistence.
 actor FileSystemStorage: StorageBackend {
     let rootPath: FilePath
     let fileSystem = FileSystem.shared
     let metadataStore: MetadataStore
     let logger = Logger(label: "SwiftS3.FileSystemStorage")
 
+    /// Initializes a new file system storage instance.
     init(rootPath: String, metadataStore: MetadataStore? = nil) {
         self.rootPath = FilePath(rootPath)
         self.metadataStore = metadataStore ?? FileSystemMetadataStore(rootPath: rootPath)

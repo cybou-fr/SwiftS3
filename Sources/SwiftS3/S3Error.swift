@@ -29,6 +29,8 @@ struct S3Error: Error, @unchecked Sendable, Equatable {
     static let bucketAlreadyExists = S3Error(
         code: "BucketAlreadyExists", message: "The requested bucket name is not available.",
         statusCode: .conflict)
+    static let invalidBucketName = S3Error(
+        code: "InvalidBucketName", message: "The specified bucket is not valid.", statusCode: .badRequest)
     static let bucketNotEmpty = S3Error(
         code: "BucketNotEmpty", message: "The bucket you tried to delete is not empty.",
         statusCode: .conflict)

@@ -47,7 +47,7 @@ final class XMLTests: XCTestCase {
     func testCompleteMultipartUploadResult() {
         let xml = XML.completeMultipartUploadResult(bucket: "bucket", key: "key", eTag: "etag", location: "location")
         XCTAssert(xml.contains("<Location>location</Location>"))
-        XCTAssert(xml.contains("<ETag>\"etag\"</ETag>"))
+        XCTAssert(xml.contains("<ETag>&quot;etag&quot;</ETag>"))
     }
 
     func testParseCompleteMultipartUpload() {

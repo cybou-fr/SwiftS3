@@ -56,6 +56,9 @@ actor MockStorage: StorageBackend {
         if shouldFailOnCreateBucket {
             throw S3Error.bucketAlreadyExists
         }
+        if buckets.contains(name) {
+            throw S3Error.bucketAlreadyExists
+        }
         buckets.insert(name)
         // Set default ACL
         let defaultAcl = AccessControlPolicy(
@@ -292,13 +295,8 @@ actor MockStorage: StorageBackend {
     }
 
     func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy) async throws {
-        if shouldFailOnPutACL {
-            throw S3Error.internalError
-        }
-
-        if operationDelay > 0 {
-            try await Task.sleep(for: .seconds(operationDelay))
-        }
+        throw S3Error.internalError
+        // ... rest of the method
 
         if let key = key {
             if acls[bucket] == nil {

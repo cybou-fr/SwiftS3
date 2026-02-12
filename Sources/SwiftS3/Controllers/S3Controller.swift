@@ -82,6 +82,33 @@ struct S3Controller {
     let evaluator = PolicyEvaluator()
     let metrics = S3Metrics()
 
+    /// Validates bucket name according to AWS S3 rules.
+    /// - Parameter name: The bucket name to validate
+    /// - Returns: True if the bucket name is valid, false otherwise
+    private func isValidBucketName(_ name: String) -> Bool {
+        // Bucket names must be between 3 and 63 characters long
+        guard (3...63).contains(name.count) else { return false }
+
+        // Bucket names can consist only of lowercase letters, numbers, hyphens, and periods
+        let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.")
+        guard name.unicodeScalars.allSatisfy({ allowedCharacters.contains($0) }) else { return false }
+
+        // Bucket names must begin and end with a letter or number
+        guard let first = name.first, let last = name.last else { return false }
+        let alphanumeric = CharacterSet.alphanumerics
+        guard alphanumeric.contains(first.unicodeScalars.first!) &&
+              alphanumeric.contains(last.unicodeScalars.first!) else { return false }
+
+        // Bucket names cannot contain two adjacent periods
+        guard !name.contains("..") else { return false }
+
+        // Bucket names cannot be formatted as an IP address
+        let ipPattern = #"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"#
+        guard name.range(of: ipPattern, options: .regularExpression) == nil else { return false }
+
+        return true
+    }
+
     /// Registers all S3 API routes with the provided router.
     func addRoutes(to router: some Router<S3RequestContext>) {
         // List Buckets (Service)
@@ -166,6 +193,11 @@ struct S3Controller {
         -> Response
     {
         let bucket = try context.parameters.require("bucket")
+
+        // Validate bucket name according to AWS S3 rules
+        if !isValidBucketName(bucket) {
+            throw S3Error.invalidBucketName
+        }
 
         // Check if this is a Policy operation
         if request.uri.queryParameters.get("policy") != nil {
@@ -658,6 +690,12 @@ struct S3Controller {
 
                     if start <= end {
                         range = ValidatedRange(start: start, end: end)
+                    } else {
+                        // Invalid range - return 416 Range Not Satisfiable
+                        return Response(status: .rangeNotSatisfiable, headers: [
+                            .contentRange: "bytes */\(objectSize)",
+                            .contentLength: "0"
+                        ])
                     }
                 }
             }
