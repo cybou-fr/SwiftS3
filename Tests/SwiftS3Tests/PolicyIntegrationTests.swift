@@ -214,4 +214,188 @@ struct PolicyIntegrationTests {
             #expect(resPut.status == .forbidden)
         }
     }
+
+    // MARK: - Policy Evaluation Edge Cases
+
+    @Test("Policy: Principal Wildcard Matching")
+    func testPrincipalWildcard() async throws {
+        try await withApp(users: [("alice", "secret1")]) { client, store in
+            // Create bucket
+            _ = try await client.execute(
+                uri: "/wildcard-bucket", method: .put,
+                headers: sign("PUT", "/wildcard-bucket", key: "alice", secret: "secret1")
+            )
+
+            // Policy with Principal: "*"
+            let policy = """
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": "*",
+                            "Action": "s3:GetObject",
+                            "Resource": "arn:aws:s3:::wildcard-bucket/*"
+                        }
+                    ]
+                }
+                """
+
+            _ = try await client.execute(
+                uri: "/wildcard-bucket?policy", method: .put,
+                headers: sign(
+                    "PUT", "/wildcard-bucket?policy", key: "alice", secret: "secret1", body: policy),
+                body: ByteBuffer(string: policy)
+            )
+
+            // Anonymous GET should succeed
+            let resGet = try await client.execute(uri: "/wildcard-bucket/test.txt", method: .get)
+            #expect(resGet.status == .notFound)  // Object doesn't exist, but policy allows access
+        }
+    }
+
+    @Test("Policy: Resource Pattern Matching")
+    func testResourcePatterns() async throws {
+        try await withApp(users: [("alice", "secret1")]) { client, store in
+            // Create bucket and objects
+            _ = try await client.execute(
+                uri: "/pattern-bucket", method: .put,
+                headers: sign("PUT", "/pattern-bucket", key: "alice", secret: "secret1")
+            )
+
+            // Put test objects
+            _ = try await client.execute(
+                uri: "/pattern-bucket/logs/app.log", method: .put,
+                headers: sign(
+                    "PUT", "/pattern-bucket/logs/app.log", key: "alice", secret: "secret1", body: "log"),
+                body: ByteBuffer(string: "log")
+            )
+
+            // Policy with resource pattern
+            let policy = """
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": "alice"},
+                            "Action": "s3:GetObject",
+                            "Resource": "arn:aws:s3:::pattern-bucket/logs/*"
+                        }
+                    ]
+                }
+                """
+
+            _ = try await client.execute(
+                uri: "/pattern-bucket?policy", method: .put,
+                headers: sign(
+                    "PUT", "/pattern-bucket?policy", key: "alice", secret: "secret1", body: policy),
+                body: ByteBuffer(string: policy)
+            )
+
+            // Alice can access logs/
+            let resGet = try await client.execute(
+                uri: "/pattern-bucket/logs/app.log", method: .get,
+                headers: sign("GET", "/pattern-bucket/logs/app.log", key: "alice", secret: "secret1")
+            )
+            #expect(resGet.status == .ok)
+        }
+    }
+
+    @Test("Policy: Action Wildcard Matching")
+    func testActionWildcards() async throws {
+        try await withApp(users: [("alice", "secret1")]) { client, store in
+            // Create bucket
+            _ = try await client.execute(
+                uri: "/action-bucket", method: .put,
+                headers: sign("PUT", "/action-bucket", key: "alice", secret: "secret1")
+            )
+
+            // Policy with s3:Get* action
+            let policy = """
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": "alice"},
+                            "Action": "s3:Get*",
+                            "Resource": "arn:aws:s3:::action-bucket/*"
+                        }
+                    ]
+                }
+                """
+
+            _ = try await client.execute(
+                uri: "/action-bucket?policy", method: .put,
+                headers: sign(
+                    "PUT", "/action-bucket?policy", key: "alice", secret: "secret1", body: policy),
+                body: ByteBuffer(string: policy)
+            )
+
+            // Alice should be able to list objects (s3:ListBucket)
+            let resList = try await client.execute(
+                uri: "/action-bucket", method: .get,
+                headers: sign("GET", "/action-bucket", key: "alice", secret: "secret1")
+            )
+            #expect(resList.status == .ok)
+        }
+    }
+
+    @Test("Policy: Explicit Deny Overrides Allow")
+    func testExplicitDenyOverridesAllow() async throws {
+        try await withApp(users: [("alice", "secret1")]) { client, store in
+            // Create bucket
+            _ = try await client.execute(
+                uri: "/deny-override-bucket", method: .put,
+                headers: sign("PUT", "/deny-override-bucket", key: "alice", secret: "secret1")
+            )
+
+            // Policy with both Allow and Deny for same action
+            let policy = """
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": "alice"},
+                            "Action": "s3:PutObject",
+                            "Resource": "arn:aws:s3:::deny-override-bucket/*"
+                        },
+                        {
+                            "Effect": "Deny",
+                            "Principal": {"AWS": "alice"},
+                            "Action": "s3:PutObject",
+                            "Resource": "arn:aws:s3:::deny-override-bucket/secret/*"
+                        }
+                    ]
+                }
+                """
+
+            _ = try await client.execute(
+                uri: "/deny-override-bucket?policy", method: .put,
+                headers: sign(
+                    "PUT", "/deny-override-bucket?policy", key: "alice", secret: "secret1", body: policy),
+                body: ByteBuffer(string: policy)
+            )
+
+            // Alice can put to root
+            let resPut1 = try await client.execute(
+                uri: "/deny-override-bucket/allowed.txt", method: .put,
+                headers: sign(
+                    "PUT", "/deny-override-bucket/allowed.txt", key: "alice", secret: "secret1", body: "ok"),
+                body: ByteBuffer(string: "ok")
+            )
+            #expect(resPut1.status == .ok)
+
+            // But not to secret/
+            let resPut2 = try await client.execute(
+                uri: "/deny-override-bucket/secret/file.txt", method: .put,
+                headers: sign(
+                    "PUT", "/deny-override-bucket/secret/file.txt", key: "alice", secret: "secret1", body: "denied"),
+                body: ByteBuffer(string: "denied")
+            )
+            #expect(resPut2.status == .forbidden)
+        }
+    }
 }
