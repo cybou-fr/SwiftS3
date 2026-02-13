@@ -12,10 +12,16 @@ actor S3Metrics {
     private var requestDuration: [String: [TimeInterval]] = [:] // method -> durations
     private var storageBytes: Int64 = 0
 
+    /// Increments the total request count by one.
     func incrementRequestCount() {
         requestCount += 1
     }
 
+    /// Records the duration of a request for the specified HTTP method.
+    /// Maintains a rolling window of the last 100 measurements per method.
+    /// - Parameters:
+    ///   - method: The HTTP method (e.g., "GET", "PUT") for which to record the duration
+    ///   - duration: The request duration in seconds
     func recordRequestDuration(method: String, duration: TimeInterval) {
         if requestDuration[method] == nil {
             requestDuration[method] = []
@@ -27,10 +33,15 @@ actor S3Metrics {
         }
     }
 
+    /// Sets the current storage usage in bytes.
+    /// - Parameter bytes: The total number of bytes currently stored
     func setStorageBytes(_ bytes: Int64) {
         storageBytes = bytes
     }
 
+    /// Returns metrics data in Prometheus format for monitoring.
+    /// Includes request counts and average request durations by HTTP method.
+    /// - Returns: A string containing Prometheus-formatted metrics
     func getMetrics() -> String {
         var output = "# HELP s3_requests_total Total number of S3 requests\n"
         output += "# TYPE s3_requests_total counter\n"
@@ -54,6 +65,8 @@ actor S3Metrics {
 }
 
 extension Array where Element == TimeInterval {
+    /// Calculates the average of all time intervals in the array.
+    /// - Returns: The average duration, or nil if the array is empty
     func average() -> TimeInterval? {
         guard !isEmpty else { return nil }
         let sum = reduce(0, +)
@@ -324,6 +337,8 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
+    /// Handles DELETE /:bucket requests to delete a bucket.
+    /// Supports sub-operations like deleting bucket policies and tags via query parameters.
     @Sendable func deleteBucket(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -353,6 +368,13 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
+    /// Deletes the bucket policy for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP 204 No Content response on success
+    /// - Throws: S3Error if access denied
     func deleteBucketPolicy(bucket: String, context: S3RequestContext, request: Request)
         async throws -> Response
     {
@@ -363,6 +385,7 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
+    /// Handles HEAD /:bucket requests to check if a bucket exists and is accessible.
     @Sendable func headBucket(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -373,6 +396,9 @@ struct S3Controller {
         return Response(status: .ok)
     }
 
+    /// Handles GET /:bucket requests to list objects in a bucket.
+    /// Supports various query parameters for filtering, pagination, and different listing modes.
+    /// Can also handle bucket policy and ACL retrieval via query parameters.
     @Sendable func listObjects(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -437,6 +463,13 @@ struct S3Controller {
             status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Retrieves the bucket policy for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with JSON policy document
+    /// - Throws: S3Error if access denied or bucket doesn't exist
     func getBucketPolicy(bucket: String, context: S3RequestContext, request: Request) async throws
         -> Response
     {
@@ -451,6 +484,13 @@ struct S3Controller {
             body: .init(byteBuffer: buffer))
     }
 
+    /// Retrieves the versioning configuration for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with XML versioning configuration
+    /// - Throws: S3Error if access denied
     func getBucketVersioning(bucket: String, context: S3RequestContext, request: Request)
         async throws
         -> Response
@@ -465,6 +505,9 @@ struct S3Controller {
             body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Handles PUT /:bucket/:key requests to upload or copy objects.
+    /// Supports object ACL and tagging operations via query parameters.
+    /// Handles both new uploads and copy operations (x-amz-copy-source header).
     @Sendable func putObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -580,6 +623,8 @@ struct S3Controller {
         return Response(status: .ok, headers: headers)
     }
 
+    /// Handles POST requests for multipart uploads and other bucket/object operations.
+    /// Used for initiating multipart uploads and completing them.
     @Sendable func postObject(
         request: Request, context: S3RequestContext, isBucketOperation: Bool
     ) async throws
@@ -678,6 +723,8 @@ struct S3Controller {
         return Response(status: .badRequest)
     }
 
+    /// Handles GET /:bucket/:key requests to download objects.
+    /// Supports range requests, versioned access, and sub-operations like ACL and tagging retrieval.
     @Sendable func getObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -786,6 +833,8 @@ struct S3Controller {
         }
     }
 
+    /// Handles DELETE /:bucket/:key requests to delete objects.
+    /// Supports versioned deletions and MFA delete requirements for versioned buckets.
     @Sendable func deleteObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -832,6 +881,8 @@ struct S3Controller {
         return Response(status: .noContent, headers: headers)
     }
 
+    /// Handles HEAD /:bucket/:key requests to get object metadata without the content.
+    /// Returns the same headers as GET but with no body.
     @Sendable func headObject(request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -1047,6 +1098,13 @@ struct S3Controller {
 
     // MARK: - ACL Handlers
 
+    /// Retrieves the Access Control List for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with XML ACL document
+    /// - Throws: S3Error if access denied
     func getBucketACL(bucket: String, context: S3RequestContext, request: Request) async throws
         -> Response
     {
@@ -1059,6 +1117,13 @@ struct S3Controller {
             body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Updates the Access Control List for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request containing ACL data
+    ///   - context: S3 request context
+    /// - Returns: HTTP 200 OK response on success
+    /// - Throws: S3Error if access denied or invalid ACL format
     func putBucketACL(bucket: String, request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -1080,6 +1145,14 @@ struct S3Controller {
         throw S3Error.notImplemented
     }
 
+    /// Retrieves the Access Control List for the specified object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: The object key
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with XML ACL document
+    /// - Throws: S3Error if access denied
     func getObjectACL(
         bucket: String, key: String, context: S3RequestContext, request: Request
     ) async throws -> Response {
@@ -1093,6 +1166,14 @@ struct S3Controller {
             body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Updates the Access Control List for the specified object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: The object key
+    ///   - request: The HTTP request containing ACL data
+    ///   - context: S3 request context
+    /// - Returns: HTTP 200 OK response on success
+    /// - Throws: S3Error if access denied or invalid ACL format
     func putObjectACL(
         bucket: String, key: String, request: Request, context: S3RequestContext
     ) async throws -> Response {
@@ -1180,6 +1261,13 @@ struct S3Controller {
 
     // MARK: - Tagging Handlers
 
+    /// Retrieves the tags for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with XML tagging configuration
+    /// - Throws: S3Error if access denied
     func getBucketTagging(bucket: String, context: S3RequestContext, request: Request) async throws
         -> Response
     {
@@ -1192,6 +1280,13 @@ struct S3Controller {
             body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Updates the tags for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request containing XML tagging data
+    ///   - context: S3 request context
+    /// - Returns: HTTP 204 No Content response on success
+    /// - Throws: S3Error if access denied or invalid XML format
     func putBucketTagging(bucket: String, request: Request, context: S3RequestContext) async throws
         -> Response
     {
@@ -1203,6 +1298,13 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
+    /// Removes all tags from the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request
+    ///   - context: S3 request context
+    /// - Returns: HTTP 204 No Content response on success
+    /// - Throws: S3Error if access denied
     func deleteBucketTagging(bucket: String, request: Request, context: S3RequestContext)
         async throws -> Response
     {
@@ -1212,6 +1314,14 @@ struct S3Controller {
         return Response(status: .noContent)
     }
 
+    /// Retrieves the tags for the specified object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: The object key
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with XML tagging configuration
+    /// - Throws: S3Error if access denied
     func getObjectTagging(
         bucket: String, key: String, context: S3RequestContext, request: Request
     ) async throws -> Response {
@@ -1227,6 +1337,14 @@ struct S3Controller {
             body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Updates the tags for the specified object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: The object key
+    ///   - request: The HTTP request containing XML tagging data
+    ///   - context: S3 request context
+    /// - Returns: HTTP 200 OK response on success
+    /// - Throws: S3Error if access denied or invalid XML format
     func putObjectTagging(
         bucket: String, key: String, request: Request, context: S3RequestContext
     ) async throws -> Response {
@@ -1241,6 +1359,14 @@ struct S3Controller {
         return Response(status: .ok)
     }
 
+    /// Removes all tags from the specified object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: The object key
+    ///   - request: The HTTP request
+    ///   - context: S3 request context
+    /// - Returns: HTTP 204 No Content response on success
+    /// - Throws: S3Error if access denied
     func deleteObjectTagging(
         bucket: String, key: String, request: Request, context: S3RequestContext
     ) async throws -> Response {
@@ -1255,6 +1381,13 @@ struct S3Controller {
 
     // MARK: - Lifecycle
 
+    /// Retrieves the lifecycle configuration for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with XML lifecycle configuration
+    /// - Throws: S3Error if access denied or no lifecycle configuration exists
     func getBucketLifecycle(
         bucket: String, context: S3RequestContext, request: Request
     ) async throws -> Response {
@@ -1270,6 +1403,13 @@ struct S3Controller {
             body: .init(byteBuffer: ByteBuffer(string: xml)))
     }
 
+    /// Sets the lifecycle configuration for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request containing XML lifecycle configuration
+    ///   - context: S3 request context
+    /// - Returns: HTTP 200 OK response on success
+    /// - Throws: S3Error if access denied or invalid XML format
     func putBucketLifecycle(
         bucket: String, request: Request, context: S3RequestContext
     ) async throws -> Response {
@@ -1282,6 +1422,13 @@ struct S3Controller {
         return Response(status: .ok)
     }
 
+    /// Removes the lifecycle configuration from the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request
+    ///   - context: S3 request context
+    /// - Returns: HTTP 204 No Content response on success
+    /// - Throws: S3Error if access denied
     func deleteBucketLifecycle(
         bucket: String, request: Request, context: S3RequestContext
     ) async throws -> Response {

@@ -1,19 +1,50 @@
 import Foundation
 import NIO
 
-/// Protocol defining metadata operations for S3 objects
+/// Protocol defining metadata operations for S3 objects.
+/// Provides abstraction for storing and retrieving object metadata, ACLs, versioning info, and bucket configurations.
+/// Implementations can use different backing stores (SQLite, in-memory, cloud databases) while maintaining consistent API.
+/// All operations are async to support various storage backends with different performance characteristics.
 protocol MetadataStore: Sendable {
-    /// Retrieve metadata for an object
+    /// Retrieve metadata for an object.
+    /// Resolves version IDs and handles delete marker logic.
+    /// Returns the most recent version if versionId is nil.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key
+    ///   - versionId: Specific version (nil for latest)
+    /// - Returns: Complete object metadata
+    /// - Throws: Error if object doesn't exist
     func getMetadata(bucket: String, key: String, versionId: String?) async throws -> ObjectMetadata
 
-    /// Save metadata for an object
-    /// Save metadata for an object
+    /// Save metadata for an object.
+    /// Creates or updates object metadata in the store.
+    /// Handles versioning automatically based on bucket configuration.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key
+    ///   - metadata: Complete object metadata to store
+    /// - Throws: Error if storage operation fails
     func saveMetadata(bucket: String, key: String, metadata: ObjectMetadata) async throws
 
     /// Delete metadata for an object
     func deleteMetadata(bucket: String, key: String, versionId: String?) async throws
 
-    /// List objects in a bucket
+    /// List objects in a bucket with optional filtering and pagination.
+    /// Supports prefix filtering, delimiter grouping, and continuation tokens.
+    /// Returns results compatible with AWS S3 ListObjects APIs.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name to list
+    ///   - prefix: Key prefix filter
+    ///   - delimiter: Grouping delimiter for hierarchical listing
+    ///   - marker: Pagination marker
+    ///   - continuationToken: Alternative pagination token
+    ///   - maxKeys: Maximum objects to return
+    /// - Returns: ListObjectsResult with objects and pagination info
+    /// - Throws: Error if bucket doesn't exist or query fails
     func listObjects(
         bucket: String, prefix: String?, delimiter: String?, marker: String?,
         continuationToken: String?, maxKeys: Int?

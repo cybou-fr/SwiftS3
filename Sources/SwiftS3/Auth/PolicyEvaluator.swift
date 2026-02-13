@@ -6,9 +6,22 @@ public enum PolicyDecision: Sendable {
     case implicitDeny  // No policy matched
 }
 
+/// Evaluates AWS IAM policy documents against access requests.
+/// Implements the AWS IAM policy evaluation logic with explicit deny precedence.
+/// Supports complex policy statements with conditions, principals, and resource patterns.
 public struct PolicyEvaluator: Sendable {
     public init() {}
 
+    /// Evaluates a bucket policy against an access request.
+    /// Implements AWS IAM policy evaluation logic:
+    /// 1. Check for explicit DENY statements (always take precedence)
+    /// 2. Check for explicit ALLOW statements
+    /// 3. Default to implicit DENY if no matching statements
+    ///
+    /// - Parameters:
+    ///   - policy: The bucket policy to evaluate
+    ///   - request: The access request context (principal, action, resource)
+    /// - Returns: PolicyDecision indicating allow, deny, or implicit deny
     public func evaluate(policy: BucketPolicy, request: PolicyRequest) -> PolicyDecision {
         // 1. Check for Explicit Deny
         for statement in policy.Statement {
@@ -28,6 +41,16 @@ public struct PolicyEvaluator: Sendable {
         return isAllowed ? .allow : .implicitDeny
     }
 
+    /// Checks if a policy statement matches the given request.
+    /// A statement matches if ALL conditions are met:
+    /// - Principal matches (user/role making request)
+    /// - Action matches (operation being performed)
+    /// - Resource matches (bucket/object being accessed)
+    ///
+    /// - Parameters:
+    ///   - statement: Policy statement to evaluate
+    ///   - request: Access request to check against
+    /// - Returns: True if statement applies to this request
     private func matches(statement: PolicyStatement, request: PolicyRequest) -> Bool {
         guard matchesPrincipal(statement.Principal, request.principal) else { return false }
         guard matchesAction(statement.Action, request.action) else { return false }

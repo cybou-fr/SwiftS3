@@ -2,6 +2,8 @@ import Foundation
 
 /// A utility for building XML documents with proper formatting and escaping.
 /// Designed specifically for generating AWS S3-compatible XML responses.
+/// Provides a fluent API for constructing XML elements with attributes and nested content.
+/// Automatically handles XML escaping and proper formatting for S3 API compatibility.
 struct XMLBuilder {
     /// The generated XML content as a string.
     public private(set) var content: String = ""
@@ -33,11 +35,24 @@ struct XMLBuilder {
     }
 
     /// Creates a simple XML element with text content.
+    /// Automatically escapes XML special characters in the value.
+    ///
+    /// - Parameters:
+    ///   - name: XML element name
+    ///   - value: Text content to be escaped and inserted
+    /// - Returns: Formatted XML element string with proper indentation
     static func element(_ name: String, _ value: String) -> String {
         return "    <\(name)>\(escape(value))</\(name)>\n"
     }
 
     /// Creates an XML element with attributes and nested content.
+    /// Supports complex XML structures with attributes and child elements.
+    ///
+    /// - Parameters:
+    ///   - name: XML element name
+    ///   - attributes: Dictionary of attribute name-value pairs
+    ///   - content: Closure that returns nested XML content
+    /// - Returns: Formatted XML element string with proper indentation
     static func element(_ name: String, attributes: [String: String] = [:], content: () -> String)
         -> String
     {

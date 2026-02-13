@@ -68,6 +68,15 @@ struct S3Authenticator: RouterMiddleware {
         return try await next(request, context)
     }
 
+    /// Verifies AWS Signature Version 4 authentication from Authorization header.
+    /// Parses the authorization header, reconstructs the canonical request, and validates
+    /// the signature against the stored user secret key.
+    ///
+    /// - Parameters:
+    ///   - request: The HTTP request with headers to verify
+    ///   - authHeader: The Authorization header value containing AWS4 credentials
+    /// - Returns: Access key ID if authentication succeeds, nil otherwise
+    /// - Throws: S3Error for invalid signatures or missing credentials
     func verifyHeaderSignature(request: Request, authHeader: String) async throws -> String? {
         let components = authHeader.split(separator: ",", omittingEmptySubsequences: true)
         guard components.count >= 3 else { return nil }
@@ -176,6 +185,13 @@ struct S3Authenticator: RouterMiddleware {
         }
     }
 
+    /// Verifies AWS Signature Version 4 authentication from query parameters.
+    /// Used for presigned URLs where credentials are passed as query parameters.
+    /// Reconstructs the canonical request and validates the signature.
+    ///
+    /// - Parameter request: The HTTP request with query parameters containing credentials
+    /// - Returns: Access key ID if authentication succeeds, nil otherwise
+    /// - Throws: S3Error for invalid signatures or missing parameters
     func verifyQuerySignature(request: Request) async throws -> String? {
         let params = request.uri.queryParameters
         guard let algorithm = params.get("X-Amz-Algorithm"),

@@ -1,5 +1,8 @@
 import Foundation
 
+/// Represents an AWS S3 Access Control List (ACL) policy.
+/// Defines permissions for principals (users/groups) to perform actions on buckets and objects.
+/// ACLs provide basic access control with predefined permission sets (read, write, full-control).
 public struct AccessControlPolicy: Codable, Sendable {
     public let owner: Owner
     public let accessControlList: [Grant]
@@ -10,6 +13,9 @@ public struct AccessControlPolicy: Codable, Sendable {
     }
 }
 
+/// Represents the owner of a bucket or object in S3.
+/// Contains the canonical user ID and optional display name.
+/// The owner always has implicit full control over their resources.
 public struct Owner: Codable, Sendable {
     public let id: String
     public let displayName: String?
@@ -20,6 +26,9 @@ public struct Owner: Codable, Sendable {
     }
 }
 
+/// Represents a single permission grant in an ACL.
+/// Defines what permission a specific grantee (user/group) has on a resource.
+/// Multiple grants can exist for different grantees and permissions.
 public struct Grant: Codable, Sendable {
     public let grantee: Grantee
     public let permission: Permission
@@ -30,6 +39,9 @@ public struct Grant: Codable, Sendable {
     }
 }
 
+/// Represents the recipient of an ACL permission grant.
+/// Can be a specific user (by ID), a predefined group, or all users.
+/// Supports both canonical user IDs and URI-based group identifiers.
 public struct Grantee: Codable, Sendable {
     public let id: String?
     public let displayName: String?
@@ -55,6 +67,9 @@ public struct Grantee: Codable, Sendable {
     }
 }
 
+/// Defines the standard S3 ACL permissions.
+/// Maps to AWS S3 permission strings used in ACL grants.
+/// Permissions can be combined in grants to provide specific access levels.
 public enum Permission: String, Codable, Sendable {
     case read = "READ"
     case write = "WRITE"
@@ -63,6 +78,9 @@ public enum Permission: String, Codable, Sendable {
     case fullControl = "FULL_CONTROL"
 }
 
+/// Predefined ACL configurations for common use cases.
+/// Provides convenient shortcuts for setting up standard permission sets.
+/// Each canned ACL translates to a specific set of grants on the resource.
 public enum CannedACL: String, Sendable {
     case privateACL = "private"
     case publicRead = "public-read"

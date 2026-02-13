@@ -39,6 +39,9 @@ struct ServerCommand: AsyncParsableCommand {
         help: "AWS Secret Access Key (fallback to AWS_SECRET_ACCESS_KEY env var)")
     var secretKey: String?
 
+    /// Starts the SwiftS3 server with the configured options.
+    /// Initializes storage, metadata store, and starts the HTTP server.
+    /// Runs until interrupted or an error occurs.
     func run() async throws {
         // Resolve credentials
         let processInfo = ProcessInfo.processInfo
@@ -82,6 +85,7 @@ extension UserCommand {
         @Option(name: .shortAndLong, help: "Storage directory path")
         var storage: String = "./data"
 
+        /// Creates a new user account with the specified credentials.
         func run() async throws {
             try await withUserStore(path: storage) { store in
                 try await store.createUser(
@@ -95,6 +99,7 @@ extension UserCommand {
         @Option(name: .shortAndLong, help: "Storage directory path")
         var storage: String = "./data"
 
+        /// Lists all registered user accounts.
         func run() async throws {
             try await withUserStore(path: storage) { store in
                 let users = try await store.listUsers()
@@ -117,6 +122,7 @@ extension UserCommand {
         @Option(name: .shortAndLong, help: "Storage directory path")
         var storage: String = "./data"
 
+        /// Deletes a user account by access key.
         func run() async throws {
             try await withUserStore(path: storage) { store in
                 // Check if exists?

@@ -3,6 +3,9 @@ import Logging
 import NIO
 
 /// Background task that periodically checks for and deletes expired objects based on Lifecycle Rules
+/// Runs as an actor to ensure thread-safe operation and proper cleanup.
+/// Monitors all buckets for lifecycle configurations and removes objects past their expiration dates.
+/// Designed to run continuously with configurable check intervals.
 actor LifecycleJanitor {
     let storage: any StorageBackend
     let interval: Duration
@@ -16,6 +19,9 @@ actor LifecycleJanitor {
         self.pageSize = pageSize
     }
 
+    /// Starts the background lifecycle monitoring task.
+    /// Begins periodic execution of expiration checks at the configured interval.
+    /// Safe to call multiple times - only starts if not already running.
     func start() {
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -34,11 +40,20 @@ actor LifecycleJanitor {
         }
     }
 
+    /// Stops the background lifecycle monitoring task.
+    /// Cancels any running expiration checks and prevents further execution.
+    /// Safe to call multiple times.
     func stop() {
         task?.cancel()
         task = nil
     }
 
+    /// Performs a complete lifecycle expiration check across all buckets.
+    /// Scans each bucket for lifecycle configurations and applies enabled rules.
+    /// Removes expired objects and performs cleanup of orphaned metadata.
+    /// Called periodically by the background task.
+    ///
+    /// - Throws: Storage errors if bucket scanning or rule application fails
     func performExpiration() async throws {
         logger.info("Janitor starting lifecycle expiration check")
         let buckets = try await storage.listBuckets()

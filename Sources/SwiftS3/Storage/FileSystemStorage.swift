@@ -67,6 +67,12 @@ actor FileSystemStorage: StorageBackend {
         return path
     }
 
+    /// Lists all buckets in the storage system.
+    /// Scans the root directory for subdirectories, each representing a bucket.
+    /// Returns bucket names with their creation timestamps from metadata store.
+    ///
+    /// - Returns: Array of tuples containing bucket name and creation date
+    /// - Throws: File system errors if root directory cannot be accessed
     func listBuckets() async throws -> [(name: String, created: Date)] {
         // Create root if not exists
         if !(try await fileSystem.exists(at: rootPath)) {
@@ -100,6 +106,13 @@ actor FileSystemStorage: StorageBackend {
         return buckets
     }
 
+    /// Creates a new bucket with the specified name and owner.
+    /// Creates a directory on the file system and registers the bucket in metadata store.
+    ///
+    /// - Parameters:
+    ///   - name: The bucket name to create
+    ///   - owner: The owner ID of the bucket creator
+    /// - Throws: S3Error.bucketAlreadyExists if bucket already exists
     func createBucket(name: String, owner: String) async throws {
         let path = bucketPath(name)
         if try await fileSystem.exists(at: path) {
@@ -110,6 +123,12 @@ actor FileSystemStorage: StorageBackend {
         try await metadataStore.createBucket(name: name, owner: owner)
     }
 
+    /// Deletes the specified bucket if it exists and is empty.
+    /// Checks for objects in the bucket (excluding internal metadata files) and removes
+    /// both the file system directory and metadata store entries.
+    ///
+    /// - Parameter name: The bucket name to delete
+    /// - Throws: S3Error.bucketNotEmpty if bucket contains objects
     func deleteBucket(name: String) async throws {
         let path = bucketPath(name)
         // Check if empty
@@ -148,6 +167,11 @@ actor FileSystemStorage: StorageBackend {
             at: path, strategy: .platformDefault, recursively: true)
     }
 
+    /// Checks if a bucket exists and returns metadata about it.
+    /// Verifies the bucket directory exists on the file system.
+    ///
+    /// - Parameter name: The bucket name to check
+    /// - Throws: S3Error.noSuchBucket if bucket does not exist
     func headBucket(name: String) async throws {
         let path = bucketPath(name)
         var isDir = false
@@ -163,6 +187,19 @@ actor FileSystemStorage: StorageBackend {
         }
     }
 
+    /// Stores a new object in the specified bucket.
+    /// Handles versioning automatically, streaming data to disk, and updating metadata.
+    /// Creates versioned files when bucket versioning is enabled.
+    ///
+    /// - Parameters:
+    ///   - bucket: Target bucket name
+    ///   - key: Object key/path
+    ///   - data: Async stream of data to store
+    ///   - size: Expected object size (optional)
+    ///   - metadata: Custom metadata key-value pairs
+    ///   - owner: Owner ID of the object
+    /// - Returns: ObjectMetadata for the stored object
+    /// - Throws: S3Error if bucket doesn't exist or storage fails
     func putObject<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, data: Stream, size: Int64?,
         metadata: [String: String]?, owner: String
@@ -224,6 +261,16 @@ actor FileSystemStorage: StorageBackend {
         return meta
     }
 
+    /// Retrieves an object from storage with optional range support.
+    /// Handles version resolution, delete marker checking, and partial content delivery.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key
+    ///   - versionId: Specific version to retrieve (nil for latest)
+    ///   - range: Byte range for partial content (optional)
+    /// - Returns: Tuple of object metadata and async stream of content
+    /// - Throws: S3Error for missing objects, delete markers, or invalid ranges
     func getObject(bucket: String, key: String, versionId: String?, range: ValidatedRange?)
         async throws -> (
             metadata: ObjectMetadata, body: AsyncStream<ByteBuffer>?
@@ -296,6 +343,16 @@ actor FileSystemStorage: StorageBackend {
         return (metadata, body)
     }
 
+    /// Deletes an object or creates a delete marker based on versioning status.
+    /// When versioning is enabled, creates a delete marker. When disabled, permanently deletes.
+    /// For versioned deletes, removes the specific version if versionId is provided.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key
+    ///   - versionId: Specific version to delete (nil for current version)
+    /// - Returns: Tuple with versionId of deleted object/marker and whether it was a delete marker
+    /// - Throws: S3Error if object doesn't exist
     func deleteObject(bucket: String, key: String, versionId: String?) async throws -> (
         versionId: String?, isDeleteMarker: Bool
     ) {
@@ -349,6 +406,18 @@ actor FileSystemStorage: StorageBackend {
         return deleted
     }
 
+    /// Copies an object from one location to another within the storage system.
+    /// Creates a new object with the same data but potentially different key/bucket.
+    /// Handles versioning automatically for the destination.
+    ///
+    /// - Parameters:
+    ///   - fromBucket: Source bucket name
+    ///   - fromKey: Source object key
+    ///   - toBucket: Destination bucket name
+    ///   - toKey: Destination object key
+    ///   - owner: Owner ID for the new object
+    /// - Returns: ObjectMetadata for the copied object
+    /// - Throws: S3Error if source doesn't exist or destination bucket invalid
     func copyObject(
         fromBucket: String, fromKey: String, toBucket: String, toKey: String, owner: String
     )
@@ -420,6 +489,18 @@ actor FileSystemStorage: StorageBackend {
         return try await getObjectMetadata(bucket: toBucket, key: toKey, versionId: nil)
     }
 
+    /// Lists objects in a bucket with optional filtering and pagination.
+    /// Delegates to metadata store for efficient querying with prefix/delimiter support.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name to list
+    ///   - prefix: Object key prefix filter
+    ///   - delimiter: Grouping delimiter for hierarchical listing
+    ///   - marker: Pagination marker for continuing listings
+    ///   - continuationToken: Alternative pagination token
+    ///   - maxKeys: Maximum number of objects to return
+    /// - Returns: ListObjectsResult with objects, prefixes, and pagination info
+    /// - Throws: S3Error if bucket doesn't exist
     func listObjects(
         bucket: String, prefix: String?, delimiter: String?, marker: String?,
         continuationToken: String?, maxKeys: Int?
@@ -429,6 +510,15 @@ actor FileSystemStorage: StorageBackend {
             continuationToken: continuationToken, maxKeys: maxKeys)
     }
 
+    /// Retrieves metadata for an object without fetching its content.
+    /// Resolves version IDs and handles delete marker logic.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key
+    ///   - versionId: Specific version ID (nil for latest)
+    /// - Returns: ObjectMetadata for the specified object
+    /// - Throws: S3Error if object doesn't exist
     func getObjectMetadata(bucket: String, key: String, versionId: String?) async throws
         -> ObjectMetadata
     {
@@ -447,6 +537,16 @@ actor FileSystemStorage: StorageBackend {
         let owner: String
     }
 
+    /// Initiates a multipart upload for large objects.
+    /// Creates an upload directory and stores upload metadata for later completion.
+    ///
+    /// - Parameters:
+    ///   - bucket: Target bucket name
+    ///   - key: Object key for the final assembled object
+    ///   - metadata: Custom metadata for the final object
+    ///   - owner: Owner ID for the upload
+    /// - Returns: Unique upload ID for referencing this upload
+    /// - Throws: S3Error if bucket doesn't exist
     func createMultipartUpload(
         bucket: String, key: String, metadata: [String: String]?, owner: String
     )
@@ -472,6 +572,18 @@ actor FileSystemStorage: StorageBackend {
         return uploadId
     }
 
+    /// Uploads a part of a multipart upload.
+    /// Stores the part data and computes its SHA256 ETag for integrity verification.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (for validation)
+    ///   - uploadId: Multipart upload ID
+    ///   - partNumber: Sequential part number (1-based)
+    ///   - data: Stream of part data
+    ///   - size: Expected part size (optional)
+    /// - Returns: SHA256 ETag of the uploaded part
+    /// - Throws: S3Error if upload doesn't exist
     func uploadPart<Stream: AsyncSequence & Sendable>(
         bucket: String, key: String, uploadId: String, partNumber: Int, data: Stream,
         size: Int64?
@@ -504,6 +616,17 @@ actor FileSystemStorage: StorageBackend {
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Completes a multipart upload by assembling all parts into final object.
+    /// Concatenates all uploaded parts in order and creates the final object.
+    /// Cleans up temporary upload files after successful completion.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Final object key
+    ///   - uploadId: Multipart upload ID
+    ///   - parts: List of parts with ETags for validation
+    /// - Returns: ETag of the assembled object
+    /// - Throws: S3Error if upload doesn't exist or parts are missing
     func completeMultipartUpload(
         bucket: String, key: String, uploadId: String, parts: [PartInfo]
     ) async throws -> String {
@@ -607,6 +730,14 @@ actor FileSystemStorage: StorageBackend {
         return finalETag
     }
 
+    /// Aborts a multipart upload and cleans up all associated resources.
+    /// Removes the upload directory and all uploaded parts. Cannot be undone.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (for validation)
+    ///   - uploadId: Multipart upload ID to abort
+    /// - Throws: S3Error if upload doesn't exist
     func abortMultipartUpload(bucket: String, key: String, uploadId: String) async throws {
         let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
         _ = try? await fileSystem.removeItem(
@@ -670,6 +801,10 @@ actor FileSystemStorage: StorageBackend {
 
     // MARK: - Bucket Policy
 
+    /// Retrieves the bucket policy for the specified bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Returns: BucketPolicy containing the policy document
+    /// - Throws: S3Error if bucket doesn't exist or has no policy
     func getBucketPolicy(bucket: String) async throws -> BucketPolicy {
         let policyPath = bucketPath(bucket).appending("policy.json")
         guard try await fileSystem.exists(at: policyPath) else {
@@ -680,6 +815,11 @@ actor FileSystemStorage: StorageBackend {
         return try JSONDecoder().decode(BucketPolicy.self, from: data)
     }
 
+    /// Sets the bucket policy for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - policy: The BucketPolicy to apply
+    /// - Throws: S3Error if bucket doesn't exist
     func putBucketPolicy(bucket: String, policy: BucketPolicy) async throws {
         // Enforce bucket existence
         let bPath = bucketPath(bucket)
@@ -692,6 +832,9 @@ actor FileSystemStorage: StorageBackend {
         try await fileSystem.writeFile(at: policyPath, bytes: ByteBuffer(data: data))
     }
 
+    /// Removes the bucket policy from the specified bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Throws: File system errors if the deletion fails
     func deleteBucketPolicy(bucket: String) async throws {
         let policyPath = bucketPath(bucket).appending("policy.json")
         if try await fileSystem.exists(at: policyPath) {
@@ -706,12 +849,26 @@ actor FileSystemStorage: StorageBackend {
 
     // MARK: - ACLs
 
+    /// Retrieves the Access Control List for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket ACL
+    ///   - versionId: Optional version ID for object ACL
+    /// - Returns: AccessControlPolicy containing the ACL information
+    /// - Throws: Database errors or if the resource doesn't exist
     func getACL(bucket: String, key: String?, versionId: String?) async throws
         -> AccessControlPolicy
     {
         return try await metadataStore.getACL(bucket: bucket, key: key, versionId: versionId)
     }
 
+    /// Updates the Access Control List for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket ACL
+    ///   - versionId: Optional version ID for object ACL
+    ///   - acl: The new AccessControlPolicy to apply
+    /// - Throws: Database errors if the update fails
     func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
         async throws
     {
@@ -720,10 +877,19 @@ actor FileSystemStorage: StorageBackend {
 
     // MARK: - Versioning
 
+    /// Retrieves the versioning configuration for a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Returns: VersioningConfiguration if set, or nil if not configured
+    /// - Throws: Database errors if the query fails
     func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration? {
         return try await metadataStore.getBucketVersioning(bucket: bucket)
     }
 
+    /// Sets the versioning configuration for a bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - configuration: The new versioning configuration
+    /// - Throws: Database errors if the update fails
     func putBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws {
         try await metadataStore.setBucketVersioning(bucket: bucket, configuration: configuration)
     }
@@ -739,28 +905,60 @@ actor FileSystemStorage: StorageBackend {
 
     // MARK: - Tagging
 
+    /// Retrieves tags for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket tags
+    ///   - versionId: Optional version ID for object tags
+    /// - Returns: Array of S3Tag objects
+    /// - Throws: Database errors if the query fails
     func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag] {
         return try await metadataStore.getTags(bucket: bucket, key: key, versionId: versionId)
     }
 
+    /// Updates tags for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket tags
+    ///   - versionId: Optional version ID for object tags
+    ///   - tags: Array of S3Tag objects to set
+    /// - Throws: Database errors if the update fails
     func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws {
         try await metadataStore.putTags(bucket: bucket, key: key, versionId: versionId, tags: tags)
     }
 
+    /// Removes all tags from a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket tags
+    ///   - versionId: Optional version ID for object tags
+    /// - Throws: Database errors if the update fails
     func deleteTags(bucket: String, key: String?, versionId: String?) async throws {
         try await metadataStore.deleteTags(bucket: bucket, key: key, versionId: versionId)
     }
 
     // MARK: - Lifecycle
 
+    /// Retrieves the lifecycle configuration for a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Returns: LifecycleConfiguration if set, or nil if not configured
+    /// - Throws: Database errors if the query fails
     func getBucketLifecycle(bucket: String) async throws -> LifecycleConfiguration? {
         return try await metadataStore.getLifecycle(bucket: bucket)
     }
 
+    /// Sets the lifecycle configuration for a bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - configuration: The lifecycle configuration to apply
+    /// - Throws: Database errors if the update fails
     func putBucketLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws {
         try await metadataStore.putLifecycle(bucket: bucket, configuration: configuration)
     }
 
+    /// Removes the lifecycle configuration from a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Throws: Database errors if the deletion fails
     func deleteBucketLifecycle(bucket: String) async throws {
         try await metadataStore.deleteLifecycle(bucket: bucket)
     }

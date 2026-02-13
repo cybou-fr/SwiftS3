@@ -4,6 +4,9 @@ import NIO
 import SQLiteNIO
 
 /// Metadata store implementation using SQLite
+/// Provides persistent storage for object metadata, bucket information, and access control.
+/// Uses SQLite database for efficient querying, indexing, and concurrent access.
+/// Handles versioning, ACLs, policies, and lifecycle management metadata.
 struct SQLMetadataStore: MetadataStore {
     let connection: SQLiteConnection
     let logger: Logger = Logger(label: "SwiftS3.SQLMetadataStore")
@@ -12,6 +15,15 @@ struct SQLMetadataStore: MetadataStore {
         self.connection = connection
     }
 
+    /// Creates a new SQLite metadata store instance.
+    /// Initializes database connection and creates all required tables and indexes.
+    ///
+    /// - Parameters:
+    ///   - path: File system path for the SQLite database file
+    ///   - eventLoopGroup: NIO event loop group for async operations
+    ///   - threadPool: NIO thread pool for database I/O operations
+    /// - Returns: Configured SQLMetadataStore instance
+    /// - Throws: Database connection or schema initialization errors
     static func create(path: String, on eventLoopGroup: EventLoopGroup, threadPool: NIOThreadPool)
         async throws -> SQLMetadataStore
     {
@@ -25,6 +37,17 @@ struct SQLMetadataStore: MetadataStore {
         return store
     }
 
+    /// Initializes the SQLite database schema.
+    /// Creates all required tables, indexes, and initial data for SwiftS3 operation.
+    /// Safe to call multiple times - uses IF NOT EXISTS clauses.
+    ///
+    /// Tables created:
+    /// - buckets: Bucket metadata and configuration
+    /// - objects: Object metadata with versioning support
+    /// - users: User accounts and credentials
+    /// - policies: Bucket policies for access control
+    ///
+    /// - Throws: SQLite errors if schema creation fails
     private func initializeSchema() async throws {
         // Create tables if not exist
         let createBuckets = """
@@ -178,6 +201,13 @@ struct SQLMetadataStore: MetadataStore {
         }
     }
 
+    /// Deletes metadata for an object from the database.
+    /// Handles versioned and non-versioned deletions, updating the latest version marker as needed.
+    /// - Parameters:
+    ///   - bucket: The bucket containing the object
+    ///   - key: The object key
+    ///   - versionId: Optional specific version to delete, or nil for latest version
+    /// - Throws: Database errors if the deletion fails
     func deleteMetadata(bucket: String, key: String, versionId: String?) async throws {
         // Check if we are deleting the latest version
         let currentMetadata = try? await getMetadata(bucket: bucket, key: key, versionId: versionId)
@@ -210,6 +240,14 @@ struct SQLMetadataStore: MetadataStore {
         }
     }
 
+    /// Retrieves metadata for an object from the database.
+    /// Returns the specified version or the latest version if no versionId is provided.
+    /// - Parameters:
+    ///   - bucket: The bucket containing the object
+    ///   - key: The object key
+    ///   - versionId: Optional specific version to retrieve, or nil for latest version
+    /// - Returns: ObjectMetadata containing all object information
+    /// - Throws: Database errors or if the object/version doesn't exist
     func getMetadata(bucket: String, key: String, versionId: String?) async throws -> ObjectMetadata
     {
         var query =
@@ -261,6 +299,11 @@ struct SQLMetadataStore: MetadataStore {
         )
     }
 
+    /// Creates a new bucket in the metadata store.
+    /// - Parameters:
+    ///   - name: The bucket name to create
+    ///   - owner: The owner ID for the bucket
+    /// - Throws: Database errors if bucket creation fails or bucket already exists
     func createBucket(name: String, owner: String) async throws {
         let query = "INSERT INTO buckets (name, created_at, owner_id) VALUES (?, ?, ?)"
         do {
@@ -276,11 +319,22 @@ struct SQLMetadataStore: MetadataStore {
         }
     }
 
+    /// Deletes a bucket from the metadata store.
+    /// Note: This only removes the bucket metadata, actual object cleanup should be handled separately.
+    /// - Parameter name: The bucket name to delete
+    /// - Throws: Database errors if the deletion fails
     func deleteBucket(name: String) async throws {
         let query = "DELETE FROM buckets WHERE name = ?"
         _ = try await connection.query(query, [.text(name)])
     }
 
+    /// Saves object metadata to the database.
+    /// Handles versioning by updating the latest version marker appropriately.
+    /// - Parameters:
+    ///   - bucket: The bucket containing the object
+    ///   - key: The object key
+    ///   - metadata: The complete object metadata to save
+    /// - Throws: Database errors if the save operation fails
     func saveMetadata(bucket: String, key: String, metadata: ObjectMetadata) async throws {
         // 1. If this is the latest version, update existing latest to false
         if metadata.isLatest {
@@ -324,6 +378,13 @@ struct SQLMetadataStore: MetadataStore {
 
     // MARK: - ACLs
 
+    /// Retrieves the Access Control List for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket ACL
+    ///   - versionId: Optional version ID for object ACL
+    /// - Returns: AccessControlPolicy containing the ACL information
+    /// - Throws: Database errors or if the resource doesn't exist
     func getACL(bucket: String, key: String?, versionId: String?) async throws
         -> AccessControlPolicy
     {
@@ -375,6 +436,13 @@ struct SQLMetadataStore: MetadataStore {
 
     }
 
+    /// Updates the Access Control List for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket ACL
+    ///   - versionId: Optional version ID for object ACL
+    ///   - acl: The new AccessControlPolicy to apply
+    /// - Throws: Database errors if the update fails
     func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
         async throws
     {
@@ -406,6 +474,10 @@ struct SQLMetadataStore: MetadataStore {
 
     // MARK: - Versioning
 
+    /// Retrieves the versioning configuration for a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Returns: VersioningConfiguration if set, or nil if not configured
+    /// - Throws: Database errors or if the bucket doesn't exist
     func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration? {
         let query = "SELECT versioning_status FROM buckets WHERE name = ?"
         let rows = try await connection.query(query, [.text(bucket)])
@@ -423,12 +495,28 @@ struct SQLMetadataStore: MetadataStore {
         return VersioningConfiguration(status: .suspended)
     }
 
+    /// Sets the versioning configuration for a bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - configuration: The new versioning configuration
+    /// - Throws: Database errors if the update fails
     func setBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws {
         let query = "UPDATE buckets SET versioning_status = ? WHERE name = ?"
         _ = try await connection.query(
             query, [.text(configuration.status.rawValue), .text(bucket)])
     }
 
+    /// Lists objects in a bucket with optional filtering and pagination.
+    /// Supports prefix, delimiter, and continuation token for large result sets.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - prefix: Optional prefix filter for object keys
+    ///   - delimiter: Optional delimiter for hierarchical listing
+    ///   - marker: Optional marker for pagination (V1 style)
+    ///   - continuationToken: Optional continuation token for pagination (V2 style)
+    ///   - maxKeys: Optional maximum number of results to return
+    /// - Returns: ListObjectsResult containing the matching objects and pagination info
+    /// - Throws: Database errors if the query fails
     func listObjects(
         bucket: String, prefix: String?, delimiter: String?, marker: String?,
         continuationToken: String?, maxKeys: Int?
@@ -576,6 +664,17 @@ struct SQLMetadataStore: MetadataStore {
         )
     }
 
+    /// Lists all versions of objects in a bucket.
+    /// Returns versioned objects including delete markers for comprehensive version history.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - prefix: Optional prefix filter for object keys
+    ///   - delimiter: Optional delimiter for hierarchical listing
+    ///   - keyMarker: Optional key marker for pagination
+    ///   - versionIdMarker: Optional version ID marker for pagination
+    ///   - maxKeys: Optional maximum number of results to return
+    /// - Returns: ListVersionsResult containing all object versions and pagination info
+    /// - Throws: Database errors if the query fails
     func listObjectVersions(
         bucket: String, prefix: String?, delimiter: String?, keyMarker: String?,
         versionIdMarker: String?, maxKeys: Int?
@@ -718,12 +817,22 @@ struct SQLMetadataStore: MetadataStore {
         )
     }
 
+    /// Shuts down the metadata store and closes the database connection.
+    /// Should be called when the application is terminating to ensure proper cleanup.
+    /// - Throws: Database errors if the connection cannot be closed cleanly
     func shutdown() async throws {
         try await connection.close()
     }
 
     // MARK: - Tagging
 
+    /// Retrieves tags for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket tags
+    ///   - versionId: Optional version ID for object tags
+    /// - Returns: Array of S3Tag objects
+    /// - Throws: Database errors if the query fails
     func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag] {
         let query: String
         let params: [SQLiteData]
@@ -759,6 +868,13 @@ struct SQLMetadataStore: MetadataStore {
         return []
     }
 
+    /// Updates tags for a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket tags
+    ///   - versionId: Optional version ID for object tags
+    ///   - tags: Array of S3Tag objects to set
+    /// - Throws: Database errors if the update fails
     func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws {
         let tagsData = try JSONEncoder().encode(tags)
         let tagsString = String(data: tagsData, encoding: .utf8) ?? "[]"
@@ -779,6 +895,12 @@ struct SQLMetadataStore: MetadataStore {
         }
     }
 
+    /// Removes all tags from a bucket or object.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - key: Optional object key, or nil for bucket tags
+    ///   - versionId: Optional version ID for object tags
+    /// - Throws: Database errors if the update fails
     func deleteTags(bucket: String, key: String?, versionId: String?) async throws {
         if let key = key {
             var query = "UPDATE objects SET tags = NULL WHERE bucket = ? AND key = ?"
@@ -798,6 +920,12 @@ struct SQLMetadataStore: MetadataStore {
 }
 
 extension SQLMetadataStore: UserStore {
+    /// Creates a new user account in the system.
+    /// - Parameters:
+    ///   - username: Display name for the user
+    ///   - accessKey: AWS access key ID for authentication
+    ///   - secretKey: AWS secret access key for authentication
+    /// - Throws: Database errors if user creation fails or access key already exists
     func createUser(username: String, accessKey: String, secretKey: String) async throws {
         let query = "INSERT INTO users (username, access_key, secret_key) VALUES (?, ?, ?)"
         _ = try await connection.query(
@@ -809,6 +937,10 @@ extension SQLMetadataStore: UserStore {
             ])
     }
 
+    /// Retrieves user information by access key.
+    /// - Parameter accessKey: The AWS access key ID
+    /// - Returns: User object if found, or nil if not found
+    /// - Throws: Database errors if the query fails
     func getUser(accessKey: String) async throws -> User? {
         let query = "SELECT username, access_key, secret_key FROM users WHERE access_key = ?"
         let rows = try await connection.query(query, [.text(accessKey)])
@@ -824,6 +956,9 @@ extension SQLMetadataStore: UserStore {
         )
     }
 
+    /// Lists all user accounts in the system.
+    /// - Returns: Array of all User objects
+    /// - Throws: Database errors if the query fails
     func listUsers() async throws -> [User] {
         let query = "SELECT username, access_key, secret_key FROM users"
         let rows = try await connection.query(query)
@@ -837,6 +972,9 @@ extension SQLMetadataStore: UserStore {
         }
     }
 
+    /// Deletes a user account from the system.
+    /// - Parameter accessKey: The AWS access key ID of the user to delete
+    /// - Throws: Database errors if the deletion fails
     func deleteUser(accessKey: String) async throws {
         let query = "DELETE FROM users WHERE access_key = ?"
         _ = try await connection.query(query, [.text(accessKey)])
@@ -844,6 +982,10 @@ extension SQLMetadataStore: UserStore {
 
     // MARK: - Lifecycle
 
+    /// Retrieves the lifecycle configuration for a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Returns: LifecycleConfiguration if set, or nil if not configured
+    /// - Throws: Database errors if the query fails
     func getLifecycle(bucket: String) async throws -> LifecycleConfiguration? {
         let query = "SELECT configuration FROM bucket_lifecycle WHERE bucket_name = ?"
         let rows = try await connection.query(query, [.text(bucket)])
@@ -854,6 +996,11 @@ extension SQLMetadataStore: UserStore {
         return try? JSONDecoder().decode(LifecycleConfiguration.self, from: data)
     }
 
+    /// Sets the lifecycle configuration for a bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - configuration: The lifecycle configuration to apply
+    /// - Throws: Database errors if the update fails
     func putLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws {
         let data = try JSONEncoder().encode(configuration)
         let configJSON = String(data: data, encoding: .utf8) ?? ""
@@ -862,6 +1009,9 @@ extension SQLMetadataStore: UserStore {
         _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
     }
 
+    /// Removes the lifecycle configuration from a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Throws: Database errors if the deletion fails
     func deleteLifecycle(bucket: String) async throws {
         let query = "DELETE FROM bucket_lifecycle WHERE bucket_name = ?"
         _ = try await connection.query(query, [.text(bucket)])
