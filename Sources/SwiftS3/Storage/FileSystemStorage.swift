@@ -1542,6 +1542,7 @@ actor FileSystemStorage: StorageBackend {
         if let httpClient = httpClient {
             try await httpClient.shutdown()
         }
+        // In testMode, httpClient is nil, so this is effectively synchronous
     }
 
     func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {

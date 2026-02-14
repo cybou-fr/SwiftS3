@@ -380,8 +380,52 @@ struct PerformanceTests {
         let storage = FileSystemStorage(rootPath: root, testMode: true)
         
         do {
-            // ... existing test code ...
-            
+            try await storage.createBucket(name: "bench-storage-bucket", owner: "test-owner")
+
+            // Benchmark direct storage operations
+            let content = ByteBuffer(string: "Benchmark content")
+
+            // Put operations
+            var putTimes: [TimeInterval] = []
+            for i in 0..<100 {
+                let key = "storage-object-\(i)"
+                let startTime = Date()
+
+                _ = try await storage.putObject(
+                    bucket: "bench-storage-bucket",
+                    key: key,
+                    data: [content].async,
+                    size: Int64(content.readableBytes),
+                    metadata: nil,
+                    owner: "test-owner"
+                )
+
+                let endTime = Date()
+                putTimes.append(endTime.timeIntervalSince(startTime))
+            }
+
+            let avgPutTime = putTimes.reduce(0, +) / Double(putTimes.count)
+            print("Direct Storage Put Performance:")
+            print("  Average: \(String(format: "%.4f", avgPutTime))s")
+            print("  Operations/sec: \(String(format: "%.2f", 1.0 / avgPutTime))")
+
+            // Get operations
+            var getTimes: [TimeInterval] = []
+            for i in 0..<100 {
+                let key = "storage-object-\(i)"
+                let startTime = Date()
+
+                _ = try await storage.getObject(bucket: "bench-storage-bucket", key: key, versionId: nil, range: nil)
+
+                let endTime = Date()
+                getTimes.append(endTime.timeIntervalSince(startTime))
+            }
+
+            let avgGetTime = getTimes.reduce(0, +) / Double(getTimes.count)
+            print("Direct Storage Get Performance:")
+            print("  Average: \(String(format: "%.4f", avgGetTime))s")
+            print("  Operations/sec: \(String(format: "%.2f", 1.0 / avgGetTime))")
+
             // List operations
             let listStartTime = Date()
             _ = try await storage.listObjects(bucket: "bench-storage-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil, maxKeys: nil)
@@ -400,6 +444,7 @@ struct PerformanceTests {
         // Cleanup
         try? await storage.shutdown()
         try? FileManager.default.removeItem(atPath: root)
+    }
 
     @Test("Memory Usage Benchmark")
     func benchmarkMemoryUsage() async throws {

@@ -44,7 +44,7 @@ struct ACLIntegrationTests {
                 secretKey: user.secretKey)
         }
 
-        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore, testMode: true)
         let controller = S3Controller(storage: storage)
 
         let router = Router(context: S3RequestContext.self)
