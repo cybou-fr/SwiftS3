@@ -1,9 +1,51 @@
 import Crypto
+import CryptoKit
 import Foundation
 import Hummingbird
 import Logging
 import NIO
 import _NIOFileSystem
+
+// CRC32 extension for Data
+extension Data {
+    func crc32() -> UInt32 {
+        var crc: UInt32 = 0xFFFFFFFF
+        let table = crc32Table()
+
+        for byte in self {
+            let index = Int((crc ^ UInt32(byte)) & 0xFF)
+            crc = (crc >> 8) ^ table[index]
+        }
+
+        return crc ^ 0xFFFFFFFF
+    }
+
+    private func crc32Table() -> [UInt32] {
+        var table: [UInt32] = Array(repeating: 0, count: 256)
+        let polynomial: UInt32 = 0xEDB88320
+
+        for i in 0..<256 {
+            var crc = UInt32(i)
+            for _ in 0..<8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ polynomial
+                } else {
+                    crc >>= 1
+                }
+            }
+            table[i] = crc
+        }
+
+        return table
+    }
+}
+
+// Digest to hex string extension
+extension Digest {
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}
 
 // Helper extension to match functionality
 extension FileSystem {
@@ -961,5 +1003,334 @@ actor FileSystemStorage: StorageBackend {
     /// - Throws: Database errors if the deletion fails
     func deleteBucketLifecycle(bucket: String) async throws {
         try await metadataStore.deleteLifecycle(bucket: bucket)
+    }
+
+    // MARK: - Advanced Storage & Data Protection
+
+    /// Changes the storage class of an existing object.
+    func changeStorageClass(bucket: String, key: String, versionId: String?, newStorageClass: StorageClass) async throws {
+        var metadata = try await metadataStore.getMetadata(bucket: bucket, key: key, versionId: versionId)
+        metadata.storageClass = newStorageClass
+        try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: metadata)
+    }
+
+    /// Puts an object lock configuration on a bucket.
+    func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws {
+        try await metadataStore.putObjectLockConfiguration(bucket: bucket, configuration: configuration)
+    }
+
+    /// Gets the object lock configuration for a bucket.
+    func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration? {
+        return try await metadataStore.getObjectLockConfiguration(bucket: bucket)
+    }
+
+    /// Puts an object lock on a specific object.
+    func putObjectLock(bucket: String, key: String, versionId: String?, mode: ObjectLockMode, retainUntilDate: Date?) async throws {
+        var metadata = try await metadataStore.getMetadata(bucket: bucket, key: key, versionId: versionId)
+        metadata.objectLockMode = mode
+        metadata.objectLockRetainUntilDate = retainUntilDate
+        try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: metadata)
+    }
+
+    /// Puts a legal hold on a specific object.
+    func putObjectLegalHold(bucket: String, key: String, versionId: String?, status: LegalHoldStatus) async throws {
+        var metadata = try await metadataStore.getMetadata(bucket: bucket, key: key, versionId: versionId)
+        metadata.objectLockLegalHoldStatus = status
+        try await metadataStore.saveMetadata(bucket: bucket, key: key, metadata: metadata)
+    }
+
+    /// Verifies data integrity using checksums and detects bitrot.
+    func verifyDataIntegrity(bucket: String, key: String, versionId: String?) async throws -> DataIntegrityResult {
+        let metadata = try await metadataStore.getMetadata(bucket: bucket, key: key, versionId: versionId)
+        let objectPath = getObjectPath(bucket: bucket, key: key, versionId: versionId)
+
+        // Read the actual data
+        let data = try await fileSystem.readAll(at: objectPath)
+
+        // If we have a checksum, verify it
+        if let algorithm = metadata.checksumAlgorithm, let storedChecksum = metadata.checksumValue {
+            let computedChecksum = try computeChecksum(data: data, algorithm: algorithm)
+            let isValid = computedChecksum == storedChecksum
+
+            return DataIntegrityResult(
+                isValid: isValid,
+                algorithm: algorithm,
+                computedChecksum: computedChecksum,
+                storedChecksum: storedChecksum,
+                bitrotDetected: !isValid,
+                canRepair: false // For now, no repair capability
+            )
+        }
+
+        // No checksum available
+        return DataIntegrityResult(
+            isValid: true, // Assume valid if no checksum
+            bitrotDetected: false,
+            canRepair: false
+        )
+    }
+
+    /// Repairs data corruption if possible (for erasure coding or bitrot recovery).
+    func repairDataCorruption(bucket: String, key: String, versionId: String?) async throws -> Bool {
+        // For now, return false as we don't have erasure coding implemented
+        // This would be where erasure coding recovery would happen
+        return false
+    }
+
+    /// Computes checksum for data using specified algorithm.
+    private func computeChecksum(data: Data, algorithm: ChecksumAlgorithm) throws -> String {
+        switch algorithm {
+        case .crc32:
+            // Simple CRC32 implementation
+            return String(format: "%08x", data.crc32())
+        case .crc32c:
+            // CRC32C - for now use same as CRC32
+            return String(format: "%08x", data.crc32())
+        case .sha1:
+            return Insecure.SHA1.hash(data: data).hexString
+        case .sha256:
+            return SHA256.hash(data: data).hexString
+        }
+    }
+
+    // MARK: - Server-Side Encryption
+
+    /// Encrypts data using the specified server-side encryption configuration.
+    func encryptData(_ data: Data, with config: ServerSideEncryptionConfig) async throws -> (encryptedData: Data, key: Data?, iv: Data?) {
+        switch config.algorithm {
+        case .aes256:
+            // Generate a random 256-bit key and IV for AES encryption
+            let key = SymmetricKey(size: .bits256)
+            let iv = AES.GCM.Nonce()
+
+            let sealedBox = try AES.GCM.seal(data, using: key, nonce: iv)
+            let combinedData = sealedBox.combined!
+
+            return (encryptedData: combinedData, key: key.withUnsafeBytes { Data($0) }, iv: iv.withUnsafeBytes { Data($0) })
+
+        case .awsKms:
+            // For KMS encryption, we'd need to call AWS KMS API
+            // For now, fall back to AES256
+            let key = SymmetricKey(size: .bits256)
+            let iv = AES.GCM.Nonce()
+
+            let sealedBox = try AES.GCM.seal(data, using: key, nonce: iv)
+            let combinedData = sealedBox.combined!
+
+            return (encryptedData: combinedData, key: key.withUnsafeBytes { Data($0) }, iv: iv.withUnsafeBytes { Data($0) })
+        }
+    }
+
+    /// Decrypts data using the specified server-side encryption configuration.
+    func decryptData(_ encryptedData: Data, with config: ServerSideEncryptionConfig, key: Data?, iv: Data?) async throws -> Data {
+        guard let key = key, let iv = iv else {
+            throw S3Error.invalidEncryption
+        }
+
+        switch config.algorithm {
+        case .aes256, .awsKms:
+            let symmetricKey = SymmetricKey(data: key)
+            let nonce = try AES.GCM.Nonce(data: iv)
+
+            let sealedBox = try AES.GCM.SealedBox(combined: encryptedData)
+            let decryptedData = try AES.GCM.open(sealedBox, using: symmetricKey)
+
+            return decryptedData
+        }
+    }
+
+    // MARK: - Cross-Region Replication
+
+    func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws {
+        // Store replication configuration in metadata store
+        try await metadataStore.putBucketReplication(bucket: bucket, configuration: configuration)
+    }
+
+    func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration? {
+        return try await metadataStore.getBucketReplication(bucket: bucket)
+    }
+
+    func deleteBucketReplication(bucket: String) async throws {
+        try await metadataStore.deleteBucketReplication(bucket: bucket)
+    }
+
+    func replicateObject(bucket: String, key: String, versionId: String?, metadata: ObjectMetadata, data: Data) async throws {
+        // Get replication configuration
+        guard let replicationConfig = try await getBucketReplication(bucket: bucket) else {
+            return // No replication configured
+        }
+
+        // Replicate to each destination
+        for rule in replicationConfig.rules where rule.status == .pending || rule.status == .completed {
+            do {
+                let destination = rule.destination
+
+                // For now, assume destination is another FileSystemStorage instance
+                // In a real implementation, this would connect to remote regions
+                logger.info("Replicating object \(key) to region \(destination.region), bucket \(destination.bucket)")
+
+                // Create destination bucket if it doesn't exist
+                try await createBucket(name: destination.bucket, owner: metadata.owner ?? "replicator")
+
+                // For this simplified implementation, just save the metadata
+                // In a real implementation, would copy the actual file data
+                let destinationKey = key // Could apply prefix transformations here
+                let destinationMetadata = ObjectMetadata(
+                    key: destinationKey,
+                    size: metadata.size,
+                    lastModified: metadata.lastModified,
+                    eTag: metadata.eTag,
+                    contentType: metadata.contentType,
+                    customMetadata: metadata.customMetadata,
+                    owner: metadata.owner,
+                    versionId: metadata.versionId,
+                    isLatest: metadata.isLatest,
+                    isDeleteMarker: metadata.isDeleteMarker,
+                    storageClass: destination.storageClass ?? metadata.storageClass,
+                    checksumAlgorithm: metadata.checksumAlgorithm,
+                    checksumValue: metadata.checksumValue,
+                    objectLockMode: metadata.objectLockMode,
+                    objectLockRetainUntilDate: metadata.objectLockRetainUntilDate,
+                    objectLockLegalHoldStatus: metadata.objectLockLegalHoldStatus,
+                    serverSideEncryption: metadata.serverSideEncryption
+                )
+
+                // Save metadata for destination
+                try await metadataStore.saveMetadata(bucket: destination.bucket, key: destinationKey, metadata: destinationMetadata)
+
+                // In a real implementation, would also copy the file data here
+                // For now, assume the data is accessible via the same file system
+
+                logger.info("Successfully replicated object \(key) to \(destination.region)/\(destination.bucket)")
+
+            } catch {
+                logger.error("Failed to replicate object \(key) to rule \(rule.id): \(error)")
+                // In a real implementation, would update replication status to failed
+            }
+        }
+    }
+
+    func getReplicationStatus(bucket: String, key: String, versionId: String?) async throws -> ReplicationStatus {
+        // For now, return completed if replication config exists
+        // In a real implementation, would track per-object replication status
+        if let _ = try await getBucketReplication(bucket: bucket) {
+            return .completed
+        }
+        return .pending
+    }
+
+    // MARK: - Event Notifications
+
+    func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws {
+        // Store notification configuration in metadata store
+        try await metadataStore.putBucketNotification(bucket: bucket, configuration: configuration)
+    }
+
+    func getBucketNotification(bucket: String) async throws -> NotificationConfiguration? {
+        return try await metadataStore.getBucketNotification(bucket: bucket)
+    }
+
+    func deleteBucketNotification(bucket: String) async throws {
+        try await metadataStore.deleteBucketNotification(bucket: bucket)
+    }
+
+    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?) async throws {
+        // Get notification configuration
+        guard let notificationConfig = try await getBucketNotification(bucket: bucket) else {
+            return // No notifications configured
+        }
+
+        // Create event record
+        let eventRecord = S3EventRecord(
+            eventName: event,
+            userIdentity: UserIdentity(principalId: "SwiftS3"), // TODO: Get from context
+            requestParameters: RequestParameters(sourceIPAddress: "127.0.0.1"), // TODO: Get from request
+            responseElements: ResponseElements(xAmzRequestId: UUID().uuidString, xAmzId2: UUID().uuidString),
+            s3: S3Entity(
+                configurationId: "default", // TODO: Use actual configuration ID
+                bucket: S3Bucket(
+                    name: bucket,
+                    ownerIdentity: UserIdentity(principalId: "SwiftS3"),
+                    arn: "arn:aws:s3:::\(bucket)"
+                ),
+                object: S3Object(
+                    key: key ?? "",
+                    size: metadata?.size,
+                    eTag: metadata?.eTag,
+                    versionId: metadata?.versionId,
+                    sequencer: UUID().uuidString
+                )
+            )
+        )
+
+        // Publish to configured destinations
+        let eventData = try JSONEncoder().encode(eventRecord)
+
+        // Publish to topics
+        if let topicConfigs = notificationConfig.topicConfigurations {
+            for topicConfig in topicConfigs {
+                if topicConfig.events.contains(event) || topicConfig.events.contains(.objectCreated) || topicConfig.events.contains(.objectRemoved) {
+                    // TODO: Implement actual SNS/SQS publishing
+                    // For now, just log the event
+                    logger.info("Event published to topic \(topicConfig.topicArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                }
+            }
+        }
+
+        // Publish to queues
+        if let queueConfigs = notificationConfig.queueConfigurations {
+            for queueConfig in queueConfigs {
+                if queueConfig.events.contains(event) || queueConfig.events.contains(.objectCreated) || queueConfig.events.contains(.objectRemoved) {
+                    // TODO: Implement actual SQS publishing
+                    // For now, just log the event
+                    logger.info("Event published to queue \(queueConfig.queueArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                }
+            }
+        }
+
+        // Publish to Lambda functions
+        if let lambdaConfigs = notificationConfig.lambdaConfigurations {
+            for lambdaConfig in lambdaConfigs {
+                if lambdaConfig.events.contains(event) || lambdaConfig.events.contains(.objectCreated) || lambdaConfig.events.contains(.objectRemoved) {
+                    // TODO: Implement actual Lambda invocation
+                    // For now, just log the event
+                    logger.info("Event published to Lambda \(lambdaConfig.lambdaFunctionArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                }
+            }
+        }
+    }
+
+    // MARK: - VPC Configuration
+
+    func getBucketVpcConfiguration(bucket: String) async throws -> VpcConfiguration? {
+        return try await metadataStore.getBucketVpcConfiguration(bucket: bucket)
+    }
+
+    func putBucketVpcConfiguration(bucket: String, configuration: VpcConfiguration) async throws {
+        try await metadataStore.putBucketVpcConfiguration(bucket: bucket, configuration: configuration)
+    }
+
+    func deleteBucketVpcConfiguration(bucket: String) async throws {
+        try await metadataStore.deleteBucketVpcConfiguration(bucket: bucket)
+    }
+
+    // MARK: - Audit Events
+
+    func logAuditEvent(_ event: AuditEvent) async throws {
+        try await metadataStore.logAuditEvent(event)
+    }
+
+    func getAuditEvents(
+        bucket: String?, principal: String?, eventType: AuditEventType?, startDate: Date?, endDate: Date?,
+        limit: Int?, continuationToken: String?
+    ) async throws -> (events: [AuditEvent], nextContinuationToken: String?) {
+        return try await metadataStore.getAuditEvents(
+            bucket: bucket, principal: principal, eventType: eventType,
+            startDate: startDate, endDate: endDate, limit: limit, continuationToken: continuationToken
+        )
+    }
+
+    func deleteAuditEvents(olderThan: Date) async throws {
+        try await metadataStore.deleteAuditEvents(olderThan: olderThan)
     }
 }

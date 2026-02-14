@@ -98,6 +98,11 @@ struct S3Error: Error, @unchecked Sendable, Equatable {
         code: "NoSuchLifecycleConfiguration",
         message: "The lifecycle configuration does not exist.",
         statusCode: .notFound)
+
+    static let invalidEncryption = S3Error(
+        code: "InvalidEncryption",
+        message: "The encryption parameters are invalid or missing.",
+        statusCode: .badRequest)
 }
 
 extension S3Error: ResponseGenerator {

@@ -566,6 +566,122 @@ class MockStorage: @unchecked Sendable, StorageBackend {
         // No-op for mock
     }
 
+    // MARK: - Advanced Storage & Data Protection
+
+    func changeStorageClass(bucket: String, key: String, versionId: String?, newStorageClass: StorageClass) async throws {
+        // No-op for mock
+    }
+
+    func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws {
+        // No-op for mock
+    }
+
+    func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration? {
+        return nil // Not implemented for mock
+    }
+
+    func putObjectLock(bucket: String, key: String, versionId: String?, mode: ObjectLockMode, retainUntilDate: Date?) async throws {
+        // No-op for mock
+    }
+
+    func putObjectLegalHold(bucket: String, key: String, versionId: String?, status: LegalHoldStatus) async throws {
+        // No-op for mock
+    }
+
+    func verifyDataIntegrity(bucket: String, key: String, versionId: String?) async throws -> DataIntegrityResult {
+        return DataIntegrityResult(isValid: true)
+    }
+
+    func repairDataCorruption(bucket: String, key: String, versionId: String?) async throws -> Bool {
+        return false // No repair capability in mock
+    }
+
+    func encryptData(_ data: Data, with config: ServerSideEncryptionConfig) async throws -> (encryptedData: Data, key: Data?, iv: Data?) {
+        // Simple mock encryption - just return the data as-is
+        return (encryptedData: data, key: nil, iv: nil)
+    }
+
+    func decryptData(_ encryptedData: Data, with config: ServerSideEncryptionConfig, key: Data?, iv: Data?) async throws -> Data {
+        // Simple mock decryption - just return the data as-is
+        return encryptedData
+    }
+
+    // MARK: - Cross-Region Replication
+
+    func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration? {
+        // Mock implementation - return nil
+        return nil
+    }
+
+    func deleteBucketReplication(bucket: String) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func replicateObject(bucket: String, key: String, versionId: String?, metadata: ObjectMetadata, data: Data) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func getReplicationStatus(bucket: String, key: String, versionId: String?) async throws -> ReplicationStatus {
+        // Mock implementation - return completed
+        return .completed
+    }
+
+    // MARK: - Event Notifications
+
+    func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func getBucketNotification(bucket: String) async throws -> NotificationConfiguration? {
+        // Mock implementation - return nil
+        return nil
+    }
+
+    func deleteBucketNotification(bucket: String) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?) async throws {
+        // Mock implementation - do nothing
+    }
+
+    // MARK: - VPC Configuration
+
+    func putBucketVpcConfiguration(bucket: String, configuration: VpcConfiguration) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func getBucketVpcConfiguration(bucket: String) async throws -> VpcConfiguration? {
+        // Mock implementation - return nil
+        return nil
+    }
+
+    func deleteBucketVpcConfiguration(bucket: String) async throws {
+        // Mock implementation - do nothing
+    }
+
+    // MARK: - Audit Events
+
+    func logAuditEvent(_ event: AuditEvent) async throws {
+        // Mock implementation - do nothing
+    }
+
+    func getAuditEvents(
+        bucket: String?, principal: String?, eventType: AuditEventType?, startDate: Date?, endDate: Date?,
+        limit: Int?, continuationToken: String?
+    ) async throws -> (events: [AuditEvent], nextContinuationToken: String?) {
+        // Mock implementation - return empty results
+        return (events: [], nextContinuationToken: nil)
+    }
+
+    func deleteAuditEvents(olderThan: Date) async throws {
+        // Mock implementation - do nothing
+    }
+
     func shutdown() async throws {
         // No-op for mock
     }

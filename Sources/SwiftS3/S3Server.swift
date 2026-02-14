@@ -51,6 +51,8 @@ struct S3Server {
         }
         
         router.middlewares.add(S3Authenticator(userStore: metadataStore))
+        router.middlewares.add(S3VpcMiddleware(storage: storage))
+        router.middlewares.add(S3AuditMiddleware(storage: storage))
         controller.addRoutes(to: router)
 
         logger.info(

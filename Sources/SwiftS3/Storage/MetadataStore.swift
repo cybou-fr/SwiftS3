@@ -1,6 +1,50 @@
 import Foundation
 import NIO
 
+/// Codable wrapper for any value type
+struct AnyCodable: Codable {
+    let value: Any
+
+    init(_ value: Any) {
+        self.value = value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) {
+            value = string
+        } else if let int = try? container.decode(Int.self) {
+            value = int
+        } else if let double = try? container.decode(Double.self) {
+            value = double
+        } else if let bool = try? container.decode(Bool.self) {
+            value = bool
+        } else if container.decodeNil() {
+            value = NSNull()
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported type")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch value {
+        case let string as String:
+            try container.encode(string)
+        case let int as Int:
+            try container.encode(int)
+        case let double as Double:
+            try container.encode(double)
+        case let bool as Bool:
+            try container.encode(bool)
+        case is NSNull:
+            try container.encodeNil()
+        default:
+            throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "Unsupported type"))
+        }
+    }
+}
+
 /// Protocol defining metadata operations for S3 objects.
 /// Provides abstraction for storing and retrieving object metadata, ACLs, versioning info, and bucket configurations.
 /// Implementations can use different backing stores (SQLite, in-memory, cloud databases) while maintaining consistent API.
@@ -80,6 +124,33 @@ protocol MetadataStore: Sendable {
     func getLifecycle(bucket: String) async throws -> LifecycleConfiguration?
     func putLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws
     func deleteLifecycle(bucket: String) async throws
+
+    // Object Lock
+    func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration?
+    func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws
+
+    // Replication
+    func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration?
+    func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws
+    func deleteBucketReplication(bucket: String) async throws
+
+    // Event Notifications
+    func getBucketNotification(bucket: String) async throws -> NotificationConfiguration?
+    func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws
+    func deleteBucketNotification(bucket: String) async throws
+
+    // VPC-Only Access
+    func getBucketVpcConfiguration(bucket: String) async throws -> VpcConfiguration?
+    func putBucketVpcConfiguration(bucket: String, configuration: VpcConfiguration) async throws
+    func deleteBucketVpcConfiguration(bucket: String) async throws
+
+    // Advanced Auditing
+    func logAuditEvent(_ event: AuditEvent) async throws
+    func getAuditEvents(
+        bucket: String?, principal: String?, eventType: AuditEventType?, startDate: Date?, endDate: Date?,
+        limit: Int?, continuationToken: String?
+    ) async throws -> (events: [AuditEvent], nextContinuationToken: String?)
+    func deleteAuditEvents(olderThan: Date) async throws
 }
 
 /// Default implementation storing metadata in sidecar JSON files
@@ -108,16 +179,44 @@ struct FileSystemMetadataStore: MetadataStore {
         let size = attr[.size] as? Int64 ?? 0
         let date = attr[.modificationDate] as? Date ?? Date()
 
-        // Read Custom Metadata from sidecar file
         var customMetadata: [String: String] = [:]
         var contentType: String? = nil
+        var storageClass: StorageClass = .standard
+        var checksumAlgorithm: ChecksumAlgorithm? = nil
+        var checksumValue: String? = nil
+        var objectLockMode: ObjectLockMode? = nil
+        var objectLockRetainUntilDate: Date? = nil
+        var objectLockLegalHoldStatus: LegalHoldStatus? = nil
+        var serverSideEncryption: ServerSideEncryptionConfig? = nil
 
         if FileManager.default.fileExists(atPath: metaPath),
             let data = try? Data(contentsOf: URL(fileURLWithPath: metaPath)),
-            let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data)
         {
-            customMetadata = dict
-            contentType = dict["Content-Type"]
+            // Extract simple string metadata
+            for (key, value) in dict {
+                if key == "Content-Type", let str = value.value as? String {
+                    contentType = str
+                } else if key == "storageClass", let str = value.value as? String {
+                    storageClass = StorageClass(rawValue: str) ?? .standard
+                } else if key == "checksumAlgorithm", let str = value.value as? String {
+                    checksumAlgorithm = ChecksumAlgorithm(rawValue: str)
+                } else if key == "checksumValue", let str = value.value as? String {
+                    checksumValue = str
+                } else if key == "objectLockMode", let str = value.value as? String {
+                    objectLockMode = ObjectLockMode(rawValue: str)
+                } else if key == "objectLockRetainUntilDate", let timestamp = value.value as? Double {
+                    objectLockRetainUntilDate = Date(timeIntervalSince1970: timestamp)
+                } else if key == "objectLockLegalHoldStatus", let str = value.value as? String {
+                    objectLockLegalHoldStatus = LegalHoldStatus(rawValue: str)
+                } else if key == "serverSideEncryptionAlgorithm", let str = value.value as? String,
+                          let algorithm = ServerSideEncryption(rawValue: str) {
+                    // For now, just store the algorithm. KMS fields would need more complex handling
+                    serverSideEncryption = ServerSideEncryptionConfig(algorithm: algorithm)
+                } else if let str = value.value as? String {
+                    customMetadata[key] = str
+                }
+            }
         }
 
         return ObjectMetadata(
@@ -129,7 +228,14 @@ struct FileSystemMetadataStore: MetadataStore {
             customMetadata: customMetadata,
             versionId: "null",
             isLatest: true,
-            isDeleteMarker: false
+            isDeleteMarker: false,
+            storageClass: storageClass,
+            checksumAlgorithm: checksumAlgorithm,
+            checksumValue: checksumValue,
+            objectLockMode: objectLockMode,
+            objectLockRetainUntilDate: objectLockRetainUntilDate,
+            objectLockLegalHoldStatus: objectLockLegalHoldStatus,
+            serverSideEncryption: serverSideEncryption
         )
     }
 
@@ -137,10 +243,44 @@ struct FileSystemMetadataStore: MetadataStore {
         let path = getObjectPath(bucket: bucket, key: key)
         let metaPath = path + ".metadata"
 
-        // Merge Content-Type into custom metadata for storage (simulating current behavior)
-        var dict = metadata.customMetadata
+        // Merge all metadata into a dictionary for storage
+        var dict: [String: AnyCodable] = [:]
+
+        // Add custom metadata
+        for (key, value) in metadata.customMetadata {
+            dict[key] = AnyCodable(value)
+        }
+
+        // Add content type
         if let contentType = metadata.contentType {
-            dict["Content-Type"] = contentType
+            dict["Content-Type"] = AnyCodable(contentType)
+        }
+
+        // Add new fields
+        dict["storageClass"] = AnyCodable(metadata.storageClass.rawValue)
+        if let checksumAlgorithm = metadata.checksumAlgorithm {
+            dict["checksumAlgorithm"] = AnyCodable(checksumAlgorithm.rawValue)
+        }
+        if let checksumValue = metadata.checksumValue {
+            dict["checksumValue"] = AnyCodable(checksumValue)
+        }
+        if let objectLockMode = metadata.objectLockMode {
+            dict["objectLockMode"] = AnyCodable(objectLockMode.rawValue)
+        }
+        if let objectLockRetainUntilDate = metadata.objectLockRetainUntilDate {
+            dict["objectLockRetainUntilDate"] = AnyCodable(objectLockRetainUntilDate.timeIntervalSince1970)
+        }
+        if let objectLockLegalHoldStatus = metadata.objectLockLegalHoldStatus {
+            dict["objectLockLegalHoldStatus"] = AnyCodable(objectLockLegalHoldStatus.rawValue)
+        }
+        if let serverSideEncryption = metadata.serverSideEncryption {
+            dict["serverSideEncryptionAlgorithm"] = AnyCodable(serverSideEncryption.algorithm.rawValue)
+            if let kmsKeyId = serverSideEncryption.kmsKeyId {
+                dict["serverSideEncryptionKmsKeyId"] = AnyCodable(kmsKeyId)
+            }
+            if let kmsEncryptionContext = serverSideEncryption.kmsEncryptionContext {
+                dict["serverSideEncryptionKmsEncryptionContext"] = AnyCodable(kmsEncryptionContext)
+            }
         }
 
         let data = try JSONEncoder().encode(dict)
@@ -422,5 +562,75 @@ struct FileSystemMetadataStore: MetadataStore {
 
     func deleteLifecycle(bucket: String) async throws {
         // Not implemented for FileSystem
+    }
+
+    // MARK: - Object Lock
+
+    func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration? {
+        return nil // Not implemented for FileSystem
+    }
+
+    func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws {
+        // Not implemented for FileSystem
+    }
+
+    // MARK: - Replication
+
+    func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration? {
+        return nil // Not implemented for FileSystem
+    }
+
+    func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws {
+        // Not implemented for FileSystem
+    }
+
+    func deleteBucketReplication(bucket: String) async throws {
+        // Not implemented for FileSystem
+    }
+
+    // MARK: - Event Notifications
+
+    func getBucketNotification(bucket: String) async throws -> NotificationConfiguration? {
+        return nil // Not implemented for FileSystem
+    }
+
+    func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws {
+        // Not implemented for FileSystem
+    }
+
+    func deleteBucketNotification(bucket: String) async throws {
+        // Not implemented for FileSystem
+    }
+
+    // MARK: - VPC Configuration
+
+    func getBucketVpcConfiguration(bucket: String) async throws -> VpcConfiguration? {
+        return nil // Not implemented for FileSystem
+    }
+
+    func putBucketVpcConfiguration(bucket: String, configuration: VpcConfiguration) async throws {
+        // Not implemented for FileSystem
+    }
+
+    func deleteBucketVpcConfiguration(bucket: String) async throws {
+        // Not implemented for FileSystem
+    }
+
+    // MARK: - Audit Events
+
+    func logAuditEvent(_ event: AuditEvent) async throws {
+        // Not implemented for FileSystem - audit events require persistent storage
+    }
+
+    func getAuditEvents(
+        bucket: String?, principal: String?, eventType: AuditEventType?, startDate: Date?, endDate: Date?,
+        limit: Int?, continuationToken: String?
+    ) async throws -> (events: [AuditEvent], nextContinuationToken: String?) {
+        // Not implemented for FileSystem - audit events require persistent storage
+        return (events: [], nextContinuationToken: nil)
+    }
+
+    func deleteAuditEvents(olderThan: Date) async throws {
+        // Not implemented for FileSystem - audit events require persistent storage
     }
 }

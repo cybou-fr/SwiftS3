@@ -256,7 +256,7 @@ struct ErrorPathTests {
         for name in validNames {
             try await app.test(.router) { client in
                 try await client.execute(uri: "/\(name)", method: .put) { response in
-                    #expect(response.status == .internalServerError)
+                    #expect(response.status == .ok)
                 }
             }
         }
@@ -297,14 +297,6 @@ struct ErrorPathTests {
     // }
 
     @Test("Edge Cases - Concurrent Bucket Creation")
-
-    //     // Create bucket
-    //     try await app.test(.router) { client in
-    //         try await client.execute(uri: "/test-bucket", method: .put) { response in
-    //             #expect(response.status == .ok)
-    //         }
-
-    // @Test("Edge Cases - Concurrent Bucket Creation")
     func testConcurrentBucketCreation() async throws {
         let mockStorage = MockStorage()
         let controller = S3Controller(storage: mockStorage)
@@ -332,7 +324,7 @@ struct ErrorPathTests {
         let (status1, status2) = try await (result1, result2)
 
         // One should succeed, one should fail with conflict
-        #expect((status1 == .internalServerError && status2 == .internalServerError))
+        #expect((status1 == .ok && status2 == .conflict) || (status1 == .conflict && status2 == .ok))
     }
 
     @Test("Edge Cases - Range Requests")
@@ -352,11 +344,11 @@ struct ErrorPathTests {
         // Create bucket and object
         try await app.test(.router) { client in
             try await client.execute(uri: "/test-bucket", method: .put) { response in
-                #expect(response.status == .internalServerError)
+                #expect(response.status == .ok)
             }
 
             try await client.execute(uri: "/test-bucket/range-test", method: .put, body: ByteBuffer(string: testContent)) { response in
-                #expect(response.status == .internalServerError)
+                #expect(response.status == .ok)
             }
         }
 
@@ -366,7 +358,9 @@ struct ErrorPathTests {
             headers[.range] = "bytes=5-15"
 
             try await client.execute(uri: "/test-bucket/range-test", method: .get, headers: headers) { response in
-                #expect(response.status == .forbidden)
+                #expect(response.status == .partialContent)
+                let body = String(buffer: response.body)
+                #expect(body == "56789ABCDEF")
             }
         }
 
@@ -376,7 +370,7 @@ struct ErrorPathTests {
             headers[.range] = "bytes=100-200"
 
             try await client.execute(uri: "/test-bucket/range-test", method: .get, headers: headers) { response in
-                #expect(response.status == .forbidden)
+                #expect(response.status == .rangeNotSatisfiable)
             }
         }
     }

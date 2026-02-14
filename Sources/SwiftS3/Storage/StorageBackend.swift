@@ -4,7 +4,7 @@ import Hummingbird
 /// Metadata associated with an S3 object, including size, timestamps, and ownership.
 /// Contains all the information needed to describe an object without its actual data.
 /// Used for listing operations, HEAD requests, and metadata queries.
-struct ObjectMetadata: Sendable {
+struct ObjectMetadata {
     let key: String
     let size: Int64
     var lastModified: Date
@@ -15,11 +15,22 @@ struct ObjectMetadata: Sendable {
     let versionId: String
     let isLatest: Bool
     let isDeleteMarker: Bool
+    var storageClass: StorageClass
+    var checksumAlgorithm: ChecksumAlgorithm?
+    var checksumValue: String?
+    var objectLockMode: ObjectLockMode?
+    var objectLockRetainUntilDate: Date?
+    var objectLockLegalHoldStatus: LegalHoldStatus?
+    var serverSideEncryption: ServerSideEncryptionConfig?
 
     init(
         key: String, size: Int64, lastModified: Date, eTag: String?, contentType: String? = nil,
         customMetadata: [String: String] = [:], owner: String? = nil,
-        versionId: String = "null", isLatest: Bool = true, isDeleteMarker: Bool = false
+        versionId: String = "null", isLatest: Bool = true, isDeleteMarker: Bool = false,
+        storageClass: StorageClass = .standard, checksumAlgorithm: ChecksumAlgorithm? = nil,
+        checksumValue: String? = nil, objectLockMode: ObjectLockMode? = nil,
+        objectLockRetainUntilDate: Date? = nil, objectLockLegalHoldStatus: LegalHoldStatus? = nil,
+        serverSideEncryption: ServerSideEncryptionConfig? = nil
     ) {
         self.key = key
         self.size = size
@@ -31,6 +42,13 @@ struct ObjectMetadata: Sendable {
         self.versionId = versionId
         self.isLatest = isLatest
         self.isDeleteMarker = isDeleteMarker
+        self.storageClass = storageClass
+        self.checksumAlgorithm = checksumAlgorithm
+        self.checksumValue = checksumValue
+        self.objectLockMode = objectLockMode
+        self.objectLockRetainUntilDate = objectLockRetainUntilDate
+        self.objectLockLegalHoldStatus = objectLockLegalHoldStatus
+        self.serverSideEncryption = serverSideEncryption
     }
 }
 
@@ -44,6 +62,418 @@ public struct S3Tag: Sendable, Codable, Equatable {
     init(key: String, value: String) {
         self.key = key
         self.value = value
+    }
+}
+
+/// Storage class for objects, determining performance and cost characteristics.
+public enum StorageClass: String, Codable, Sendable {
+    case standard = "STANDARD"
+    case reducedRedundancy = "REDUCED_REDUNDANCY"
+    case standardIa = "STANDARD_IA"
+    case oneZoneIa = "ONEZONE_IA"
+    case intelligentTiering = "INTELLIGENT_TIERING"
+    case glacier = "GLACIER"
+    case deepArchive = "DEEP_ARCHIVE"
+    case outposts = "OUTPOSTS"
+}
+
+/// Checksum algorithms supported for data integrity verification.
+public enum ChecksumAlgorithm: String, Codable, Sendable {
+    case crc32 = "CRC32"
+    case crc32c = "CRC32C"
+    case sha1 = "SHA1"
+    case sha256 = "SHA256"
+}
+
+/// Object lock modes for WORM (Write Once Read Many) compliance.
+public enum ObjectLockMode: String, Codable, Sendable {
+    case governance = "GOVERNANCE"
+    case compliance = "COMPLIANCE"
+}
+
+/// Legal hold status for objects under legal hold.
+public enum LegalHoldStatus: String, Codable, Sendable {
+    case on = "ON"
+    case off = "OFF"
+}
+
+/// Server-side encryption methods supported.
+public enum ServerSideEncryption: String, Codable, Sendable {
+    case aes256 = "AES256"
+    case awsKms = "aws:kms"
+}
+
+/// Server-side encryption configuration for objects.
+public struct ServerSideEncryptionConfig: Codable, Sendable {
+    public let algorithm: ServerSideEncryption
+    public let kmsKeyId: String?
+    public let kmsEncryptionContext: String?
+
+    public init(algorithm: ServerSideEncryption, kmsKeyId: String? = nil, kmsEncryptionContext: String? = nil) {
+        self.algorithm = algorithm
+        self.kmsKeyId = kmsKeyId
+        self.kmsEncryptionContext = kmsEncryptionContext
+    }
+}
+
+/// Replication rule defining how objects are replicated to destination regions.
+public struct ReplicationRule: Codable, Sendable {
+    public let id: String
+    public let status: ReplicationStatus
+    public let destination: ReplicationDestination
+    public let filter: ReplicationFilter?
+
+    public init(id: String, status: ReplicationStatus, destination: ReplicationDestination, filter: ReplicationFilter? = nil) {
+        self.id = id
+        self.status = status
+        self.destination = destination
+        self.filter = filter
+    }
+}
+
+/// Destination configuration for replication.
+public struct ReplicationDestination: Codable, Sendable {
+    public let region: String
+    public let bucket: String
+    public let storageClass: StorageClass?
+
+    public init(region: String, bucket: String, storageClass: StorageClass? = nil) {
+        self.region = region
+        self.bucket = bucket
+        self.storageClass = storageClass
+    }
+}
+
+/// Filter for replication rules.
+public struct ReplicationFilter: Codable, Sendable {
+    public let prefix: String?
+
+    public init(prefix: String? = nil) {
+        self.prefix = prefix
+    }
+}
+
+/// Replication configuration for a bucket.
+public struct ReplicationConfiguration: Codable, Sendable {
+    public let role: String
+    public let rules: [ReplicationRule]
+
+    public init(role: String, rules: [ReplicationRule]) {
+        self.role = role
+        self.rules = rules
+    }
+}
+
+/// Status of replication for an object.
+public enum ReplicationStatus: String, Codable, Sendable {
+    case pending = "PENDING"
+    case completed = "COMPLETED"
+    case failed = "FAILED"
+}
+
+/// VPC configuration for restricting bucket access to specific networks.
+public struct VpcConfiguration: Codable, Sendable {
+    /// VPC ID for the configuration (optional, for AWS compatibility)
+    public let vpcId: String?
+    /// List of allowed IP ranges in CIDR notation (e.g., ["10.0.0.0/8", "192.168.1.0/24"])
+    public let allowedIpRanges: [String]
+
+    public init(vpcId: String? = nil, allowedIpRanges: [String]) {
+        self.vpcId = vpcId
+        self.allowedIpRanges = allowedIpRanges
+    }
+}
+
+/// Audit event types for compliance logging.
+public enum AuditEventType: String, Codable, Sendable {
+    case bucketCreated = "BucketCreated"
+    case bucketDeleted = "BucketDeleted"
+    case objectUploaded = "ObjectUploaded"
+    case objectDownloaded = "ObjectDownloaded"
+    case objectDeleted = "ObjectDeleted"
+    case objectCopied = "ObjectCopied"
+    case policyUpdated = "PolicyUpdated"
+    case aclUpdated = "ACLUpdated"
+    case versioningUpdated = "VersioningUpdated"
+    case lifecycleUpdated = "LifecycleUpdated"
+    case replicationUpdated = "ReplicationUpdated"
+    case notificationUpdated = "NotificationUpdated"
+    case vpcConfigUpdated = "VpcConfigUpdated"
+    case accessDenied = "AccessDenied"
+    case authenticationFailed = "AuthenticationFailed"
+}
+
+/// Audit event record for compliance and security monitoring.
+public struct AuditEvent: Codable, Sendable {
+    public let id: String
+    public let timestamp: Date
+    public let eventType: AuditEventType
+    public let principal: String
+    public let sourceIp: String?
+    public let userAgent: String?
+    public let requestId: String
+    public let bucket: String?
+    public let key: String?
+    public let operation: String
+    public let status: String
+    public let errorMessage: String?
+    public let additionalData: [String: String]?
+
+    public init(
+        id: String = UUID().uuidString,
+        timestamp: Date = Date(),
+        eventType: AuditEventType,
+        principal: String,
+        sourceIp: String? = nil,
+        userAgent: String? = nil,
+        requestId: String,
+        bucket: String? = nil,
+        key: String? = nil,
+        operation: String,
+        status: String,
+        errorMessage: String? = nil,
+        additionalData: [String: String]? = nil
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.eventType = eventType
+        self.principal = principal
+        self.sourceIp = sourceIp
+        self.userAgent = userAgent
+        self.requestId = requestId
+        self.bucket = bucket
+        self.key = key
+        self.operation = operation
+        self.status = status
+        self.errorMessage = errorMessage
+        self.additionalData = additionalData
+    }
+}
+
+/// S3 event types that can trigger notifications.
+public enum S3EventType: String, Codable, Sendable {
+    case objectCreated = "s3:ObjectCreated:*"
+    case objectCreatedPut = "s3:ObjectCreated:Put"
+    case objectCreatedPost = "s3:ObjectCreated:Post"
+    case objectCreatedCopy = "s3:ObjectCreated:Copy"
+    case objectCreatedCompleteMultipartUpload = "s3:ObjectCreated:CompleteMultipartUpload"
+    case objectRemoved = "s3:ObjectRemoved:*"
+    case objectRemovedDelete = "s3:ObjectRemoved:Delete"
+    case objectRemovedDeleteMarkerCreated = "s3:ObjectRemoved:DeleteMarkerCreated"
+    case objectRestore = "s3:ObjectRestore:*"
+    case objectRestorePost = "s3:ObjectRestore:Post"
+    case objectRestoreCompleted = "s3:ObjectRestore:Completed"
+    case reducedRedundancyLostObject = "s3:ReducedRedundancyLostObject"
+    case replication = "s3:Replication:*"
+    case replicationOperationFailedReplication = "s3:Replication:OperationFailedReplication"
+    case replicationOperationNotTracked = "s3:Replication:OperationNotTracked"
+    case replicationOperationMissedThreshold = "s3:Replication:OperationMissedThreshold"
+    case replicationOperationReplicatedAfterThreshold = "s3:Replication:OperationReplicatedAfterThreshold"
+}
+
+/// Configuration for event notifications on a bucket.
+public struct NotificationConfiguration: Codable, Sendable {
+    public let topicConfigurations: [TopicConfiguration]?
+    public let queueConfigurations: [QueueConfiguration]?
+    public let lambdaConfigurations: [LambdaConfiguration]?
+
+    public init(
+        topicConfigurations: [TopicConfiguration]? = nil,
+        queueConfigurations: [QueueConfiguration]? = nil,
+        lambdaConfigurations: [LambdaConfiguration]? = nil
+    ) {
+        self.topicConfigurations = topicConfigurations
+        self.queueConfigurations = queueConfigurations
+        self.lambdaConfigurations = lambdaConfigurations
+    }
+}
+
+/// Topic-based event notification configuration.
+public struct TopicConfiguration: Codable, Sendable {
+    public let id: String?
+    public let topicArn: String
+    public let events: [S3EventType]
+    public let filter: NotificationFilter?
+
+    public init(id: String? = nil, topicArn: String, events: [S3EventType], filter: NotificationFilter? = nil) {
+        self.id = id
+        self.topicArn = topicArn
+        self.events = events
+        self.filter = filter
+    }
+}
+
+/// Queue-based event notification configuration.
+public struct QueueConfiguration: Codable, Sendable {
+    public let id: String?
+    public let queueArn: String
+    public let events: [S3EventType]
+    public let filter: NotificationFilter?
+
+    public init(id: String? = nil, queueArn: String, events: [S3EventType], filter: NotificationFilter? = nil) {
+        self.id = id
+        self.queueArn = queueArn
+        self.events = events
+        self.filter = filter
+    }
+}
+
+/// Lambda function-based event notification configuration.
+public struct LambdaConfiguration: Codable, Sendable {
+    public let id: String?
+    public let lambdaFunctionArn: String
+    public let events: [S3EventType]
+    public let filter: NotificationFilter?
+
+    public init(id: String? = nil, lambdaFunctionArn: String, events: [S3EventType], filter: NotificationFilter? = nil) {
+        self.id = id
+        self.lambdaFunctionArn = lambdaFunctionArn
+        self.events = events
+        self.filter = filter
+    }
+}
+
+/// Filter for event notifications.
+public struct NotificationFilter: Codable, Sendable {
+    public let key: KeyFilter?
+
+    public init(key: KeyFilter? = nil) {
+        self.key = key
+    }
+}
+
+/// Key-based filter for object keys.
+public struct KeyFilter: Codable, Sendable {
+    public let filterRules: [FilterRule]
+
+    public init(filterRules: [FilterRule]) {
+        self.filterRules = filterRules
+    }
+}
+
+/// Individual filter rule for key filtering.
+public struct FilterRule: Codable, Sendable {
+    public let name: FilterRuleName
+    public let value: String
+
+    public init(name: FilterRuleName, value: String) {
+        self.name = name
+        self.value = value
+    }
+}
+
+/// Filter rule names for key filtering.
+public enum FilterRuleName: String, Codable, Sendable {
+    case prefix = "prefix"
+    case suffix = "suffix"
+}
+
+/// S3 event record containing details about the event.
+public struct S3EventRecord: Codable, Sendable {
+    public let eventVersion: String
+    public let eventSource: String
+    public let awsRegion: String
+    public let eventTime: Date
+    public let eventName: S3EventType
+    public let userIdentity: UserIdentity
+    public let requestParameters: RequestParameters
+    public let responseElements: ResponseElements
+    public let s3: S3Entity
+
+    public init(
+        eventVersion: String = "2.1",
+        eventSource: String = "aws:s3",
+        awsRegion: String = "us-east-1",
+        eventTime: Date = Date(),
+        eventName: S3EventType,
+        userIdentity: UserIdentity,
+        requestParameters: RequestParameters,
+        responseElements: ResponseElements,
+        s3: S3Entity
+    ) {
+        self.eventVersion = eventVersion
+        self.eventSource = eventSource
+        self.awsRegion = awsRegion
+        self.eventTime = eventTime
+        self.eventName = eventName
+        self.userIdentity = userIdentity
+        self.requestParameters = requestParameters
+        self.responseElements = responseElements
+        self.s3 = s3
+    }
+}
+
+/// User identity information for the event.
+public struct UserIdentity: Codable, Sendable {
+    public let principalId: String
+
+    public init(principalId: String) {
+        self.principalId = principalId
+    }
+}
+
+/// Request parameters for the event.
+public struct RequestParameters: Codable, Sendable {
+    public let sourceIPAddress: String
+
+    public init(sourceIPAddress: String) {
+        self.sourceIPAddress = sourceIPAddress
+    }
+}
+
+/// Response elements for the event.
+public struct ResponseElements: Codable, Sendable {
+    public let xAmzRequestId: String
+    public let xAmzId2: String
+
+    public init(xAmzRequestId: String, xAmzId2: String) {
+        self.xAmzRequestId = xAmzRequestId
+        self.xAmzId2 = xAmzId2
+    }
+}
+
+/// S3 entity information for the event.
+public struct S3Entity: Codable, Sendable {
+    public let s3SchemaVersion: String
+    public let configurationId: String
+    public let bucket: S3Bucket
+    public let object: S3Object
+
+    public init(s3SchemaVersion: String = "1.0", configurationId: String, bucket: S3Bucket, object: S3Object) {
+        self.s3SchemaVersion = s3SchemaVersion
+        self.configurationId = configurationId
+        self.bucket = bucket
+        self.object = object
+    }
+}
+
+/// S3 bucket information for the event.
+public struct S3Bucket: Codable, Sendable {
+    public let name: String
+    public let ownerIdentity: UserIdentity
+    public let arn: String
+
+    public init(name: String, ownerIdentity: UserIdentity, arn: String) {
+        self.name = name
+        self.ownerIdentity = ownerIdentity
+        self.arn = arn
+    }
+}
+
+/// S3 object information for the event.
+public struct S3Object: Codable, Sendable {
+    public let key: String
+    public let size: Int64?
+    public let eTag: String?
+    public let versionId: String?
+    public let sequencer: String
+
+    public init(key: String, size: Int64?, eTag: String?, versionId: String?, sequencer: String) {
+        self.key = key
+        self.size = size
+        self.eTag = eTag
+        self.versionId = versionId
+        self.sequencer = sequencer
     }
 }
 
@@ -205,6 +635,69 @@ protocol StorageBackend: Sendable {
     // Garbage collection
     /// Cleans up orphaned multipart uploads older than the specified time interval.
     func cleanupOrphanedUploads(olderThan: TimeInterval) async throws
+
+    // Advanced Storage & Data Protection
+    /// Changes the storage class of an existing object.
+    func changeStorageClass(bucket: String, key: String, versionId: String?, newStorageClass: StorageClass) async throws
+    /// Puts an object lock configuration on a bucket.
+    func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws
+    /// Gets the object lock configuration for a bucket.
+    func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration?
+    /// Puts an object lock on a specific object.
+    func putObjectLock(bucket: String, key: String, versionId: String?, mode: ObjectLockMode, retainUntilDate: Date?) async throws
+    /// Puts a legal hold on a specific object.
+    func putObjectLegalHold(bucket: String, key: String, versionId: String?, status: LegalHoldStatus) async throws
+    /// Verifies data integrity using checksums and detects bitrot.
+    func verifyDataIntegrity(bucket: String, key: String, versionId: String?) async throws -> DataIntegrityResult
+    /// Repairs data corruption if possible (for erasure coding or bitrot recovery).
+    func repairDataCorruption(bucket: String, key: String, versionId: String?) async throws -> Bool
+
+    // Server-Side Encryption
+    /// Encrypts data using the specified server-side encryption configuration.
+    func encryptData(_ data: Data, with config: ServerSideEncryptionConfig) async throws -> (encryptedData: Data, key: Data?, iv: Data?)
+    /// Decrypts data using the specified server-side encryption configuration.
+    func decryptData(_ encryptedData: Data, with config: ServerSideEncryptionConfig, key: Data?, iv: Data?) async throws -> Data
+
+    // Cross-Region Replication
+    /// Configures cross-region replication for a bucket.
+    func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws
+    /// Gets the replication configuration for a bucket.
+    func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration?
+    /// Deletes the replication configuration for a bucket.
+    func deleteBucketReplication(bucket: String) async throws
+    /// Replicates an object to configured destination regions.
+    func replicateObject(bucket: String, key: String, versionId: String?, metadata: ObjectMetadata, data: Data) async throws
+    /// Gets the replication status of an object.
+    func getReplicationStatus(bucket: String, key: String, versionId: String?) async throws -> ReplicationStatus
+
+    // Event Notifications
+    /// Configures event notifications for a bucket.
+    func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws
+    /// Gets the notification configuration for a bucket.
+    func getBucketNotification(bucket: String) async throws -> NotificationConfiguration?
+    /// Deletes the notification configuration for a bucket.
+    func deleteBucketNotification(bucket: String) async throws
+    /// Publishes an event notification for the specified bucket and event.
+    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?) async throws
+
+    // VPC-Only Access
+    /// Configures VPC-only access for a bucket.
+    func putBucketVpcConfiguration(bucket: String, configuration: VpcConfiguration) async throws
+    /// Gets the VPC configuration for a bucket.
+    func getBucketVpcConfiguration(bucket: String) async throws -> VpcConfiguration?
+    /// Deletes the VPC configuration for a bucket.
+    func deleteBucketVpcConfiguration(bucket: String) async throws
+
+    // Advanced Auditing
+    /// Logs an audit event for compliance and security monitoring.
+    func logAuditEvent(_ event: AuditEvent) async throws
+    /// Retrieves audit events with optional filtering.
+    func getAuditEvents(
+        bucket: String?, principal: String?, eventType: AuditEventType?, startDate: Date?, endDate: Date?,
+        limit: Int?, continuationToken: String?
+    ) async throws -> (events: [AuditEvent], nextContinuationToken: String?)
+    /// Deletes audit events older than the specified date.
+    func deleteAuditEvents(olderThan: Date) async throws
 }
 
 /// Configuration for bucket versioning behavior.
@@ -294,4 +787,67 @@ public struct LifecycleConfiguration: Codable, Sendable {
 struct ValidatedRange: Sendable {
     let start: Int64
     let end: Int64
+}
+
+/// Configuration for object lock on a bucket.
+public struct ObjectLockConfiguration: Codable, Sendable {
+    /// Whether object lock is enabled for the bucket.
+    public enum ObjectLockEnabled: String, Codable, Sendable {
+        case enabled = "Enabled"
+    }
+
+    /// Default retention mode for objects in the bucket.
+    public let objectLockEnabled: ObjectLockEnabled?
+    /// Default retention period for objects.
+    public let defaultRetention: DefaultRetention?
+
+    public init(objectLockEnabled: ObjectLockEnabled? = nil, defaultRetention: DefaultRetention? = nil) {
+        self.objectLockEnabled = objectLockEnabled
+        self.defaultRetention = defaultRetention
+    }
+
+    /// Default retention configuration for bucket objects.
+    public struct DefaultRetention: Codable, Sendable {
+        public let mode: ObjectLockMode
+        public let days: Int?
+        public let years: Int?
+
+        public init(mode: ObjectLockMode, days: Int? = nil, years: Int? = nil) {
+            self.mode = mode
+            self.days = days
+            self.years = years
+        }
+    }
+}
+
+/// Result of data integrity verification.
+public struct DataIntegrityResult: Sendable {
+    /// Whether the data integrity check passed.
+    public let isValid: Bool
+    /// The checksum algorithm used.
+    public let algorithm: ChecksumAlgorithm?
+    /// The computed checksum value.
+    public let computedChecksum: String?
+    /// The stored checksum value.
+    public let storedChecksum: String?
+    /// Whether bitrot was detected.
+    public let bitrotDetected: Bool
+    /// Whether the data can be repaired.
+    public let canRepair: Bool
+
+    public init(
+        isValid: Bool,
+        algorithm: ChecksumAlgorithm? = nil,
+        computedChecksum: String? = nil,
+        storedChecksum: String? = nil,
+        bitrotDetected: Bool = false,
+        canRepair: Bool = false
+    ) {
+        self.isValid = isValid
+        self.algorithm = algorithm
+        self.computedChecksum = computedChecksum
+        self.storedChecksum = storedChecksum
+        self.bitrotDetected = bitrotDetected
+        self.canRepair = canRepair
+    }
 }

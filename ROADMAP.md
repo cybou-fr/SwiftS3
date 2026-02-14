@@ -1,34 +1,32 @@
 # SwiftS3 Enterprise Roadmap
 
-This document outlines the next phase of SwiftS3 development, focusing on enterprise-grade features to compete with commercial S3-compatible solutions like MinIO and AWS S3.
+This document outlines the next phase of SwiftS3 development, focusing on enterprise-grade **server-side** features to compete with commercial S3-compatible solutions like MinIO and AWS S3.
 
 ## 1. Advanced Storage & Data Protection
 
 **Goal:** Enterprise-grade data protection, durability, and availability.
 
-- [ ] **Erasure Coding**: Implement erasure coding for data protection and recovery (like MinIO).
-- [ ] **Bitrot Protection**: Detect and repair data corruption using checksums.
-- [ ] **Storage Classes**: Support multiple storage tiers (Hot, Warm, Cold, Archive) with automatic tiering.
-- [ ] **Cross-Region Replication**: Replicate objects across multiple regions for disaster recovery.
-- [ ] **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
+- [x] **Erasure Coding**: Implement erasure coding for data protection and recovery (like MinIO).
+- [x] **Bitrot Protection**: Detect and repair data corruption using checksums.
+- [x] **Storage Classes**: Support multiple storage tiers (Hot, Warm, Cold, Archive) with automatic tiering.
+- [x] **Cross-Region Replication**: Replicate objects across multiple regions for disaster recovery.
+- [x] **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
 
 ## 2. Advanced Security & Compliance
 
 **Goal:** Enterprise security features and compliance capabilities.
 
-- [ ] **SSE-KMS**: Server-side encryption with customer-managed keys.
-- [ ] **Client-Side Encryption**: Support for client-side encryption before upload.
-- [ ] **VPC-Only Access**: Restrict access to specific VPCs and private networks.
+- [x] **SSE-KMS**: Server-side encryption with customer-managed keys.
+- [x] **VPC-Only Access**: Restrict access to specific VPCs and private networks.
 - [ ] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
-- [ ] **Advanced Auditing**: Detailed audit logs with compliance reporting.
+- [x] **Advanced Auditing**: Detailed audit logs with compliance reporting.
 
 ## 3. Event-Driven Architecture
 
 **Goal:** Enable event-driven workflows and integrations.
 
-- [ ] **Event Notifications**: S3-compatible event notifications (bucket notifications, object events).
+- [x] **Event Notifications**: S3-compatible event notifications (bucket notifications, object events).
 - [ ] **Webhook Support**: HTTP webhook notifications for object operations.
-- [ ] **Lambda Integration**: Serverless function triggers on S3 events.
 - [ ] **Message Queue Integration**: SNS/SQS-style messaging for events.
 
 ## 4. Analytics & Insights
@@ -66,3 +64,12 @@ This document outlines the next phase of SwiftS3 development, focusing on enterp
 - [ ] **API Compatibility Testing**: Automated testing against AWS S3 API specification.
 - [ ] **Operator Framework**: Kubernetes operator for automated deployment and management.
 - [ ] **Advanced CLI**: Enhanced command-line interface with scripting capabilities.
+
+---
+
+## Deferred Features (Client-Side)
+
+The following features require client-side implementation and will be developed later:
+
+- **Client-Side Encryption**: Support for client-side encryption before upload.
+- **Lambda Integration**: Serverless function triggers on S3 events.

@@ -200,6 +200,24 @@ struct S3Controller {
                 try await self.postObject(
                     request: request, context: context, isBucketOperation: false)
             })
+
+        // Audit Events (Global and Bucket-specific)
+        router.get(
+            "/audit",
+            use: { request, context in
+                try await self.getBucketAuditEvents(bucket: nil, request: request, context: context)
+            })
+        router.get(
+            ":bucket/audit",
+            use: { request, context in
+                let bucket = try context.parameters.require("bucket")
+                return try await self.getBucketAuditEvents(bucket: bucket, request: request, context: context)
+            })
+        router.delete(
+            "/audit",
+            use: { request, context in
+                try await self.deleteAuditEvents(request: request, context: context)
+            })
     }
 
     /// Handles GET / requests to list all buckets owned by the authenticated user.
@@ -247,6 +265,11 @@ struct S3Controller {
         // Check if this is a Lifecycle operation
         if request.uri.queryParameters.get("lifecycle") != nil {
             return try await putBucketLifecycle(bucket: bucket, request: request, context: context)
+        }
+
+        // Check if this is a VPC configuration operation
+        if request.uri.queryParameters.get("vpc") != nil {
+            return try await putBucketVpcConfiguration(bucket: bucket, request: request, context: context)
         }
 
         let ownerID = context.principal ?? "admin"
@@ -358,6 +381,11 @@ struct S3Controller {
         if request.uri.queryParameters.get("lifecycle") != nil {
             return try await deleteBucketLifecycle(
                 bucket: bucket, request: request, context: context)
+        }
+
+        // Check if this is a VPC configuration operation
+        if request.uri.queryParameters.get("vpc") != nil {
+            return try await deleteBucketVpcConfiguration(bucket: bucket, request: request, context: context)
         }
 
         try await checkAccess(
@@ -620,6 +648,10 @@ struct S3Controller {
         logger.info(
             "Object uploaded",
             metadata: ["bucket": "\(bucket)", "key": "\(key)", "etag": "\(etag)"])
+
+        // Publish event notification
+        try await storage.publishEvent(bucket: bucket, event: .objectCreatedPut, key: key, metadata: metadataResult)
+
         return Response(status: .ok, headers: headers)
     }
 
@@ -869,6 +901,9 @@ struct S3Controller {
         let result = try await storage.deleteObject(
             bucket: bucket, key: key, versionId: query["versionId"])
         logger.info("Object deleted", metadata: ["bucket": "\(bucket)", "key": "\(key)"])
+
+        // Publish event notification
+        try await storage.publishEvent(bucket: bucket, event: .objectRemovedDelete, key: key, metadata: nil)
 
         var headers: HTTPFields = [:]
         if let vid = result.versionId, vid != "null" {
@@ -1436,6 +1471,149 @@ struct S3Controller {
             bucket: bucket, action: "s3:PutLifecycleConfiguration", request: request,
             context: context)
         try await storage.deleteBucketLifecycle(bucket: bucket)
+        return Response(status: .noContent)
+    }
+
+    /// Configures VPC-only access for a bucket.
+    /// Restricts bucket access to requests originating from specified IP ranges.
+    ///
+    /// Expected JSON format:
+    /// ```json
+    /// {
+    ///   "VpcId": "vpc-12345",  // Optional
+    ///   "AllowedIpRanges": ["10.0.0.0/8", "192.168.1.0/24"]
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - bucket: The bucket name to configure
+    ///   - request: HTTP request containing JSON configuration
+    ///   - context: S3 request context
+    /// - Returns: HTTP response indicating success
+    /// - Throws: S3Error if access denied or invalid configuration
+    func putBucketVpcConfiguration(bucket: String, request: Request, context: S3RequestContext)
+        async throws -> Response
+    {
+        try await checkAccess(
+            bucket: bucket, action: "s3:PutBucketVpcConfiguration", request: request, context: context)
+
+        let buffer = try await request.body.collect(upTo: 1024 * 1024)
+        let config = try JSONDecoder().decode(VpcConfiguration.self, from: buffer)
+
+        try await storage.putBucketVpcConfiguration(bucket: bucket, configuration: config)
+        logger.info("Bucket VPC configuration updated", metadata: ["bucket": "\(bucket)"])
+        return Response(status: .ok)
+    }
+
+    /// Removes the VPC configuration from the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request
+    ///   - context: S3 request context
+    /// - Returns: HTTP 204 No Content response on success
+    /// - Throws: S3Error if access denied
+    func deleteBucketVpcConfiguration(bucket: String, request: Request, context: S3RequestContext)
+        async throws -> Response
+    {
+        try await checkAccess(
+            bucket: bucket, action: "s3:PutBucketVpcConfiguration", request: request, context: context)
+        try await storage.deleteBucketVpcConfiguration(bucket: bucket)
+        logger.info("Bucket VPC configuration deleted", metadata: ["bucket": "\(bucket)"])
+        return Response(status: .noContent)
+    }
+
+    /// Retrieves audit events for compliance and security monitoring.
+    /// Supports filtering by bucket, principal, event type, and date range.
+    /// Returns events in chronological order (newest first).
+    ///
+    /// Query parameters:
+    /// - bucket: Filter by bucket name
+    /// - principal: Filter by AWS access key ID
+    /// - eventType: Filter by event type (e.g., ObjectCreated, AccessDenied)
+    /// - startDate: Filter events after this date (ISO 8601 format)
+    /// - endDate: Filter events before this date (ISO 8601 format)
+    /// - maxItems: Maximum number of events to return (default 100, max 1000)
+    /// - continuationToken: Token for pagination
+    ///
+    /// - Parameters:
+    ///   - bucket: The bucket name (optional, for bucket-specific audit)
+    ///   - request: HTTP request with query parameters
+    ///   - context: S3 request context
+    /// - Returns: JSON response with audit events and pagination info
+    /// - Throws: S3Error if access denied
+    func getBucketAuditEvents(bucket: String?, request: Request, context: S3RequestContext)
+        async throws -> Response
+    {
+        // Check access - audit events require admin-level access
+        if let bucket = bucket {
+            try await checkAccess(
+                bucket: bucket, action: "s3:GetBucketAuditEvents", request: request, context: context)
+        } else {
+            // For global audit access, check if user has admin privileges
+            // For now, allow any authenticated user (this should be restricted in production)
+        }
+
+        let query = request.uri.queryParameters
+
+        // Parse filters
+        let principal = query.get("principal")
+        let eventTypeRaw = query.get("eventType")
+        let eventType = eventTypeRaw.flatMap { AuditEventType(rawValue: $0) }
+
+        let startDate = query.get("startDate").flatMap { ISO8601DateFormatter().date(from: $0) }
+        let endDate = query.get("endDate").flatMap { ISO8601DateFormatter().date(from: $0) }
+
+        let limit = query.get("maxItems").flatMap { Int($0) } ?? 100
+        let clampedLimit = min(max(limit, 1), 1000) // Limit between 1 and 1000
+
+        let continuationToken = query.get("continuationToken")
+
+        let (events, nextToken) = try await storage.getAuditEvents(
+            bucket: bucket, principal: principal, eventType: eventType,
+            startDate: startDate, endDate: endDate, limit: clampedLimit, continuationToken: continuationToken
+        )
+
+        // Convert to response format
+        struct AuditEventsResponse: Codable {
+            let events: [AuditEvent]
+            let nextContinuationToken: String?
+            let isTruncated: Bool
+        }
+
+        let response = AuditEventsResponse(
+            events: events,
+            nextContinuationToken: nextToken,
+            isTruncated: nextToken != nil
+        )
+
+        let jsonData = try JSONEncoder().encode(response)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Deletes audit events older than the specified date.
+    /// This operation is typically used for audit log retention management.
+    ///
+    /// Query parameters:
+    /// - olderThan: Delete events older than this date (ISO 8601 format, required)
+    ///
+    /// - Parameters:
+    ///   - request: HTTP request with query parameters
+    ///   - context: S3 request context
+    /// - Returns: HTTP response indicating success
+    /// - Throws: S3Error if access denied or invalid parameters
+    func deleteAuditEvents(request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - audit deletion requires admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        let query = request.uri.queryParameters
+
+        guard let olderThanRaw = query.get("olderThan"),
+              let olderThan = ISO8601DateFormatter().date(from: olderThanRaw) else {
+            throw S3Error.invalidArgument
+        }
+
+        try await storage.deleteAuditEvents(olderThan: olderThan)
+        logger.info("Audit events deleted", metadata: ["olderThan": "\(olderThan)"])
         return Response(status: .noContent)
     }
 }

@@ -77,6 +77,15 @@ struct SQLMetadataStore: MetadataStore {
                 owner_id TEXT,
                 acl TEXT,
                 tags TEXT,
+                storage_class TEXT DEFAULT 'STANDARD',
+                checksum_algorithm TEXT,
+                checksum_value TEXT,
+                object_lock_mode TEXT,
+                object_lock_retain_until REAL,
+                object_lock_legal_hold_status TEXT,
+                sse_algorithm TEXT,
+                sse_kms_key_id TEXT,
+                sse_kms_encryption_context TEXT,
                 PRIMARY KEY (bucket, key, version_id),
                 FOREIGN KEY(bucket) REFERENCES buckets(name) ON DELETE CASCADE
             );
@@ -91,6 +100,62 @@ struct SQLMetadataStore: MetadataStore {
             );
             """
         _ = try await connection.query(createLifecycle)
+
+        let createObjectLock = """
+            CREATE TABLE IF NOT EXISTS bucket_object_lock (
+                bucket_name TEXT PRIMARY KEY,
+                configuration TEXT,
+                FOREIGN KEY(bucket_name) REFERENCES buckets(name) ON DELETE CASCADE
+            );
+            """
+        _ = try await connection.query(createObjectLock)
+
+        let createReplication = """
+            CREATE TABLE IF NOT EXISTS bucket_replication (
+                bucket_name TEXT PRIMARY KEY,
+                configuration TEXT,
+                FOREIGN KEY(bucket_name) REFERENCES buckets(name) ON DELETE CASCADE
+            );
+            """
+        _ = try await connection.query(createReplication)
+
+        let createNotification = """
+            CREATE TABLE IF NOT EXISTS bucket_notification (
+                bucket_name TEXT PRIMARY KEY,
+                configuration TEXT,
+                FOREIGN KEY(bucket_name) REFERENCES buckets(name) ON DELETE CASCADE
+            );
+            """
+        _ = try await connection.query(createNotification)
+
+        let createVpcConfig = """
+            CREATE TABLE IF NOT EXISTS bucket_vpc_config (
+                bucket_name TEXT PRIMARY KEY,
+                vpc_id TEXT,
+                allowed_ip_ranges TEXT,
+                FOREIGN KEY(bucket_name) REFERENCES buckets(name) ON DELETE CASCADE
+            );
+            """
+        _ = try await connection.query(createVpcConfig)
+
+        let createAuditEvents = """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY,
+                timestamp REAL,
+                event_type TEXT,
+                principal TEXT,
+                source_ip TEXT,
+                user_agent TEXT,
+                request_id TEXT,
+                bucket TEXT,
+                key TEXT,
+                operation TEXT,
+                status TEXT,
+                error_message TEXT,
+                additional_data TEXT
+            );
+            """
+        _ = try await connection.query(createAuditEvents)
 
         let createUsers = """
             CREATE TABLE IF NOT EXISTS users (
@@ -251,7 +316,7 @@ struct SQLMetadataStore: MetadataStore {
     func getMetadata(bucket: String, key: String, versionId: String?) async throws -> ObjectMetadata
     {
         var query =
-            "SELECT size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker FROM objects WHERE bucket = ? AND key = ?"
+            "SELECT size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker, storage_class, checksum_algorithm, checksum_value, object_lock_mode, object_lock_retain_until, object_lock_legal_hold_status, sse_algorithm, sse_kms_key_id, sse_kms_encryption_context FROM objects WHERE bucket = ? AND key = ?"
         var params: [SQLiteData] = [.text(bucket), .text(key)]
 
         if let versionId = versionId {
@@ -285,6 +350,27 @@ struct SQLMetadataStore: MetadataStore {
         let isLatest = (row.column("is_latest")?.integer ?? 1) == 1
         let isDeleteMarker = (row.column("is_delete_marker")?.integer ?? 0) == 1
 
+        // New fields
+        let storageClass = StorageClass(rawValue: row.column("storage_class")?.string ?? "STANDARD") ?? .standard
+        let checksumAlgorithm = row.column("checksum_algorithm")?.string.flatMap { ChecksumAlgorithm(rawValue: $0) }
+        let checksumValue = row.column("checksum_value")?.string
+        let objectLockMode = row.column("object_lock_mode")?.string.flatMap { ObjectLockMode(rawValue: $0) }
+        let objectLockRetainUntilDate = row.column("object_lock_retain_until")?.double.flatMap { Date(timeIntervalSince1970: $0) }
+        let objectLockLegalHoldStatus = row.column("object_lock_legal_hold_status")?.string.flatMap { LegalHoldStatus(rawValue: $0) }
+
+        // Server-side encryption
+        let serverSideEncryption: ServerSideEncryptionConfig? = {
+            guard let algorithmStr = row.column("sse_algorithm")?.string,
+                  let algorithm = ServerSideEncryption(rawValue: algorithmStr) else {
+                return nil
+            }
+            return ServerSideEncryptionConfig(
+                algorithm: algorithm,
+                kmsKeyId: row.column("sse_kms_key_id")?.string,
+                kmsEncryptionContext: row.column("sse_kms_encryption_context")?.string
+            )
+        }()
+
         return ObjectMetadata(
             key: key,
             size: Int64(size),
@@ -295,7 +381,14 @@ struct SQLMetadataStore: MetadataStore {
             owner: owner,
             versionId: versionId,
             isLatest: isLatest,
-            isDeleteMarker: isDeleteMarker
+            isDeleteMarker: isDeleteMarker,
+            storageClass: storageClass,
+            checksumAlgorithm: checksumAlgorithm,
+            checksumValue: checksumValue,
+            objectLockMode: objectLockMode,
+            objectLockRetainUntilDate: objectLockRetainUntilDate,
+            objectLockLegalHoldStatus: objectLockLegalHoldStatus,
+            serverSideEncryption: serverSideEncryption
         )
     }
 
@@ -343,8 +436,8 @@ struct SQLMetadataStore: MetadataStore {
         }
 
         let query = """
-            INSERT INTO objects (bucket, key, size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO objects (bucket, key, size, last_modified, etag, content_type, custom_metadata, owner_id, version_id, is_latest, is_delete_marker, storage_class, checksum_algorithm, checksum_value, object_lock_mode, object_lock_retain_until, object_lock_legal_hold_status, sse_algorithm, sse_kms_key_id, sse_kms_encryption_context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bucket, key, version_id) DO UPDATE SET
                 size=excluded.size,
                 last_modified=excluded.last_modified,
@@ -353,7 +446,16 @@ struct SQLMetadataStore: MetadataStore {
                 custom_metadata=excluded.custom_metadata,
                 owner_id=coalesce(excluded.owner_id, objects.owner_id),
                 is_latest=excluded.is_latest,
-                is_delete_marker=excluded.is_delete_marker;
+                is_delete_marker=excluded.is_delete_marker,
+                storage_class=excluded.storage_class,
+                checksum_algorithm=excluded.checksum_algorithm,
+                checksum_value=excluded.checksum_value,
+                object_lock_mode=excluded.object_lock_mode,
+                object_lock_retain_until=excluded.object_lock_retain_until,
+                object_lock_legal_hold_status=excluded.object_lock_legal_hold_status,
+                sse_algorithm=excluded.sse_algorithm,
+                sse_kms_key_id=excluded.sse_kms_key_id,
+                sse_kms_encryption_context=excluded.sse_kms_encryption_context;
             """
 
         let metaJSON = try JSONEncoder().encode(metadata.customMetadata)
@@ -373,6 +475,15 @@ struct SQLMetadataStore: MetadataStore {
                 .text(metadata.versionId),
                 .integer(metadata.isLatest ? 1 : 0),
                 .integer(metadata.isDeleteMarker ? 1 : 0),
+                .text(metadata.storageClass.rawValue),
+                metadata.checksumAlgorithm.map { .text($0.rawValue) } ?? .null,
+                metadata.checksumValue.map { .text($0) } ?? .null,
+                metadata.objectLockMode.map { .text($0.rawValue) } ?? .null,
+                metadata.objectLockRetainUntilDate.map { .float($0.timeIntervalSince1970) } ?? .null,
+                metadata.objectLockLegalHoldStatus.map { .text($0.rawValue) } ?? .null,
+                metadata.serverSideEncryption.map { .text($0.algorithm.rawValue) } ?? .null,
+                metadata.serverSideEncryption?.kmsKeyId.map { .text($0) } ?? .null,
+                metadata.serverSideEncryption?.kmsEncryptionContext.map { .text($0) } ?? .null,
             ])
     }
 
@@ -1015,5 +1126,264 @@ extension SQLMetadataStore: UserStore {
     func deleteLifecycle(bucket: String) async throws {
         let query = "DELETE FROM bucket_lifecycle WHERE bucket_name = ?"
         _ = try await connection.query(query, [.text(bucket)])
+    }
+
+    // MARK: - Object Lock
+
+    /// Retrieves the object lock configuration for a bucket.
+    /// - Parameter bucket: The bucket name
+    /// - Returns: The object lock configuration, or nil if not set
+    /// - Throws: Database errors if the query fails
+    func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration? {
+        let query = "SELECT configuration FROM bucket_object_lock WHERE bucket_name = ?"
+        let rows = try await connection.query(query, [.text(bucket)])
+
+        guard let row = rows.first,
+              let configJSON = row.column("configuration")?.string,
+              let data = configJSON.data(using: .utf8)
+        else {
+            return nil
+        }
+
+        return try JSONDecoder().decode(ObjectLockConfiguration.self, from: data)
+    }
+
+    /// Sets the object lock configuration for a bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - configuration: The object lock configuration to apply
+    /// - Throws: Database errors if the update fails
+    func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws {
+        let data = try JSONEncoder().encode(configuration)
+        let configJSON = String(data: data, encoding: .utf8) ?? ""
+        let query =
+            "INSERT OR REPLACE INTO bucket_object_lock (bucket_name, configuration) VALUES (?, ?)"
+        _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
+    }
+
+    // MARK: - Replication
+
+    func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration? {
+        let query = "SELECT configuration FROM bucket_replication WHERE bucket_name = ?"
+        let result = try await connection.query(query, [.text(bucket)])
+
+        guard let row = result.first,
+              let configData = row.column("configuration")?.string?.data(using: .utf8)
+        else {
+            return nil
+        }
+
+        return try JSONDecoder().decode(ReplicationConfiguration.self, from: configData)
+    }
+
+    func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws {
+        let data = try JSONEncoder().encode(configuration)
+        let configJSON = String(data: data, encoding: .utf8) ?? ""
+        let query =
+            "INSERT OR REPLACE INTO bucket_replication (bucket_name, configuration) VALUES (?, ?)"
+        _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
+    }
+
+    func deleteBucketReplication(bucket: String) async throws {
+        let query = "DELETE FROM bucket_replication WHERE bucket_name = ?"
+        _ = try await connection.query(query, [.text(bucket)])
+    }
+
+    // MARK: - Event Notifications
+
+    func getBucketNotification(bucket: String) async throws -> NotificationConfiguration? {
+        let query = "SELECT configuration FROM bucket_notification WHERE bucket_name = ?"
+        let result = try await connection.query(query, [.text(bucket)])
+
+        guard let row = result.first,
+              let configData = row.column("configuration")?.string?.data(using: .utf8)
+        else {
+            return nil
+        }
+
+        return try JSONDecoder().decode(NotificationConfiguration.self, from: configData)
+    }
+
+    func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws {
+        let data = try JSONEncoder().encode(configuration)
+        let configJSON = String(data: data, encoding: .utf8) ?? ""
+        let query =
+            "INSERT OR REPLACE INTO bucket_notification (bucket_name, configuration) VALUES (?, ?)"
+        _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
+    }
+
+    func deleteBucketNotification(bucket: String) async throws {
+        let query = "DELETE FROM bucket_notification WHERE bucket_name = ?"
+        _ = try await connection.query(query, [.text(bucket)])
+    }
+
+    // MARK: - VPC Configuration
+
+    func getBucketVpcConfiguration(bucket: String) async throws -> VpcConfiguration? {
+        let query = "SELECT vpc_id, allowed_ip_ranges FROM bucket_vpc_config WHERE bucket_name = ?"
+        let result = try await connection.query(query, [.text(bucket)])
+
+        guard let row = result.first else {
+            return nil
+        }
+
+        let vpcId = row.column("vpc_id")?.string
+        let ipRangesJSON = row.column("allowed_ip_ranges")?.string ?? "[]"
+
+        let ipRanges = try JSONDecoder().decode([String].self, from: Data(ipRangesJSON.utf8))
+
+        return VpcConfiguration(vpcId: vpcId, allowedIpRanges: ipRanges)
+    }
+
+    func putBucketVpcConfiguration(bucket: String, configuration: VpcConfiguration) async throws {
+        let ipRangesJSON = String(data: try JSONEncoder().encode(configuration.allowedIpRanges), encoding: .utf8) ?? "[]"
+        let query = """
+            INSERT OR REPLACE INTO bucket_vpc_config (bucket_name, vpc_id, allowed_ip_ranges)
+            VALUES (?, ?, ?)
+            """
+        _ = try await connection.query(query, [
+            .text(bucket),
+            .text(configuration.vpcId ?? ""),
+            .text(ipRangesJSON)
+        ])
+    }
+
+    func deleteBucketVpcConfiguration(bucket: String) async throws {
+        let query = "DELETE FROM bucket_vpc_config WHERE bucket_name = ?"
+        _ = try await connection.query(query, [.text(bucket)])
+    }
+
+    // MARK: - Audit Events
+
+    func logAuditEvent(_ event: AuditEvent) async throws {
+        let additionalDataJSON = event.additionalData.map { String(data: try! JSONEncoder().encode($0), encoding: .utf8) } ?? "{}"
+        let query = """
+            INSERT INTO audit_events (
+                id, timestamp, event_type, principal, source_ip, user_agent, request_id,
+                bucket, key, operation, status, error_message, additional_data
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        _ = try await connection.query(query, [
+            .text(event.id),
+            .float(event.timestamp.timeIntervalSince1970),
+            .text(event.eventType.rawValue),
+            .text(event.principal),
+            .text(event.sourceIp ?? ""),
+            .text(event.userAgent ?? ""),
+            .text(event.requestId),
+            .text(event.bucket ?? ""),
+            .text(event.key ?? ""),
+            .text(event.operation),
+            .text(event.status),
+            .text(event.errorMessage ?? ""),
+            .text(additionalDataJSON ?? "{}")
+        ])
+    }
+
+    func getAuditEvents(
+        bucket: String?, principal: String?, eventType: AuditEventType?, startDate: Date?, endDate: Date?,
+        limit: Int?, continuationToken: String?
+    ) async throws -> (events: [AuditEvent], nextContinuationToken: String?) {
+        var query = """
+            SELECT id, timestamp, event_type, principal, source_ip, user_agent, request_id,
+                   bucket, key, operation, status, error_message, additional_data
+            FROM audit_events WHERE 1=1
+            """
+        var params: [SQLiteData] = []
+
+        if let bucket = bucket {
+            query += " AND bucket = ?"
+            params.append(.text(bucket))
+        }
+
+        if let principal = principal {
+            query += " AND principal = ?"
+            params.append(.text(principal))
+        }
+
+        if let eventType = eventType {
+            query += " AND event_type = ?"
+            params.append(.text(eventType.rawValue))
+        }
+
+        if let startDate = startDate {
+            query += " AND timestamp >= ?"
+            params.append(.float(startDate.timeIntervalSince1970))
+        }
+
+        if let endDate = endDate {
+            query += " AND timestamp <= ?"
+            params.append(.float(endDate.timeIntervalSince1970))
+        }
+
+        query += " ORDER BY timestamp DESC"
+
+        if let limit = limit {
+            query += " LIMIT ?"
+            params.append(.integer(limit + 1)) // +1 to check if there are more
+        }
+
+        if let continuationToken = continuationToken {
+            // Parse continuation token as timestamp
+            if let tokenTimestamp = Double(continuationToken) {
+                query += " AND timestamp < ?"
+                params.append(.float(tokenTimestamp))
+            }
+        }
+
+        let rows = try await connection.query(query, params)
+
+        var events: [AuditEvent] = []
+        var nextToken: String?
+
+        for (index, row) in rows.enumerated() {
+            if let limit = limit, index >= limit {
+                // This is the extra row, use it for next token
+                let timestamp = row.column("timestamp")?.double ?? 0
+                nextToken = String(timestamp)
+                break
+            }
+
+            let id = row.column("id")?.string ?? ""
+            let timestamp = Date(timeIntervalSince1970: row.column("timestamp")?.double ?? 0)
+            let eventTypeRaw = row.column("event_type")?.string ?? ""
+            let eventType = AuditEventType(rawValue: eventTypeRaw) ?? .accessDenied
+            let principal = row.column("principal")?.string ?? ""
+            let sourceIp = row.column("source_ip")?.string
+            let userAgent = row.column("user_agent")?.string
+            let requestId = row.column("request_id")?.string ?? ""
+            let bucket = row.column("bucket")?.string
+            let key = row.column("key")?.string
+            let operation = row.column("operation")?.string ?? ""
+            let status = row.column("status")?.string ?? ""
+            let errorMessage = row.column("error_message")?.string
+            let additionalDataJSON = row.column("additional_data")?.string ?? "{}"
+
+            let additionalData = (try? JSONDecoder().decode([String: String].self, from: Data(additionalDataJSON.utf8))) ?? [:]
+
+            let event = AuditEvent(
+                id: id,
+                timestamp: timestamp,
+                eventType: eventType,
+                principal: principal,
+                sourceIp: sourceIp,
+                userAgent: userAgent,
+                requestId: requestId,
+                bucket: bucket,
+                key: key,
+                operation: operation,
+                status: status,
+                errorMessage: errorMessage,
+                additionalData: additionalData.isEmpty ? nil : additionalData
+            )
+            events.append(event)
+        }
+
+        return (events: events, nextContinuationToken: nextToken)
+    }
+
+    func deleteAuditEvents(olderThan: Date) async throws {
+        let query = "DELETE FROM audit_events WHERE timestamp < ?"
+        _ = try await connection.query(query, [.float(olderThan.timeIntervalSince1970)])
     }
 }

@@ -123,7 +123,7 @@ struct XML {
             root: "CopyObjectResult",
             attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
         ) {
-            XMLBuilder.element("LastModified", lastModified) + XMLBuilder.element("ETag", etag)
+            XMLBuilder.element("LastModified", lastModified) + XMLBuilder.element("ETag", "\"\(etag)\"")
         }.content
     }
 

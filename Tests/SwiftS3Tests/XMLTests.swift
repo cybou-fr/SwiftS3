@@ -34,8 +34,8 @@ final class XMLTests: XCTestCase {
     func testCopyObjectResult() {
         let metadata = ObjectMetadata(key: "key", size: 100, lastModified: Date(), eTag: "etag")
         let xml = XML.copyObjectResult(metadata: metadata)
-        XCTAssert(xml.contains("<CopyObjectResult>"))
-        XCTAssert(xml.contains("<ETag>etag</ETag>"))
+        XCTAssert(xml.contains("CopyObjectResult"))
+        XCTAssert(xml.contains("<ETag>&quot;etag&quot;</ETag>"))
     }
 
     func testInitiateMultipartUploadResult() {
