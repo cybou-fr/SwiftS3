@@ -39,6 +39,18 @@ struct ServerCommand: AsyncParsableCommand {
         help: "AWS Secret Access Key (fallback to AWS_SECRET_ACCESS_KEY env var)")
     var secretKey: String?
 
+    @Option(name: .customLong("ldap-server"), help: "LDAP server URL (e.g., ldap://localhost:389)")
+    var ldapServer: String?
+
+    @Option(name: .customLong("ldap-base-dn"), help: "LDAP base DN for user searches")
+    var ldapBaseDN: String?
+
+    @Option(name: .customLong("ldap-bind-dn"), help: "LDAP bind DN for authentication")
+    var ldapBindDN: String?
+
+    @Option(name: .customLong("ldap-bind-password"), help: "LDAP bind password")
+    var ldapBindPassword: String?
+
     /// Starts the SwiftS3 server with the configured options.
     /// Initializes storage, metadata store, and starts the HTTP server.
     /// Runs until interrupted or an error occurs.
@@ -57,7 +69,16 @@ struct ServerCommand: AsyncParsableCommand {
 
         let server = S3Server(
             hostname: hostname, port: port, storagePath: storage,
-            accessKey: finalAccessKey, secretKey: finalSecretKey)
+            accessKey: finalAccessKey, secretKey: finalSecretKey,
+            ldapConfig: ldapServer.map { server in
+                LDAPConfig(
+                    server: server,
+                    baseDN: ldapBaseDN ?? "",
+                    bindDN: ldapBindDN ?? "",
+                    bindPassword: ldapBindPassword ?? ""
+                )
+            }
+        )
         try await server.run()
     }
 }

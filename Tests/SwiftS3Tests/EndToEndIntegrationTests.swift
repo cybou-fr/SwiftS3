@@ -35,7 +35,7 @@ struct EndToEndIntegrationTests {
         ).path
         let server = S3Server(
             hostname: "127.0.0.1", port: 0, storagePath: storagePath, accessKey: "admin",
-            secretKey: "password")
+            secretKey: "password", ldapConfig: nil)
 
         // Ensure storage directory exists
         try? FileManager.default.createDirectory(

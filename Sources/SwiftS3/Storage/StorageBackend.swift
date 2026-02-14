@@ -276,15 +276,18 @@ public struct NotificationConfiguration: Codable, Sendable {
     public let topicConfigurations: [TopicConfiguration]?
     public let queueConfigurations: [QueueConfiguration]?
     public let lambdaConfigurations: [LambdaConfiguration]?
+    public let webhookConfigurations: [WebhookConfiguration]?
 
     public init(
         topicConfigurations: [TopicConfiguration]? = nil,
         queueConfigurations: [QueueConfiguration]? = nil,
-        lambdaConfigurations: [LambdaConfiguration]? = nil
+        lambdaConfigurations: [LambdaConfiguration]? = nil,
+        webhookConfigurations: [WebhookConfiguration]? = nil
     ) {
         self.topicConfigurations = topicConfigurations
         self.queueConfigurations = queueConfigurations
         self.lambdaConfigurations = lambdaConfigurations
+        self.webhookConfigurations = webhookConfigurations
     }
 }
 
@@ -328,6 +331,21 @@ public struct LambdaConfiguration: Codable, Sendable {
     public init(id: String? = nil, lambdaFunctionArn: String, events: [S3EventType], filter: NotificationFilter? = nil) {
         self.id = id
         self.lambdaFunctionArn = lambdaFunctionArn
+        self.events = events
+        self.filter = filter
+    }
+}
+
+/// Webhook-based event notification configuration.
+public struct WebhookConfiguration: Codable, Sendable {
+    public let id: String?
+    public let url: String
+    public let events: [S3EventType]
+    public let filter: NotificationFilter?
+
+    public init(id: String? = nil, url: String, events: [S3EventType], filter: NotificationFilter? = nil) {
+        self.id = id
+        self.url = url
         self.events = events
         self.filter = filter
     }

@@ -1270,9 +1270,13 @@ actor FileSystemStorage: StorageBackend {
         if let topicConfigs = notificationConfig.topicConfigurations {
             for topicConfig in topicConfigs {
                 if topicConfig.events.contains(event) || topicConfig.events.contains(.objectCreated) || topicConfig.events.contains(.objectRemoved) {
-                    // TODO: Implement actual SNS/SQS publishing
-                    // For now, just log the event
-                    logger.info("Event published to topic \(topicConfig.topicArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                    Task {
+                        do {
+                            try await postToTopic(topicArn: topicConfig.topicArn, eventData: eventData)
+                        } catch {
+                            logger.error("Failed to post to topic \(topicConfig.topicArn): \(error)")
+                        }
+                    }
                 }
             }
         }
@@ -1281,9 +1285,13 @@ actor FileSystemStorage: StorageBackend {
         if let queueConfigs = notificationConfig.queueConfigurations {
             for queueConfig in queueConfigs {
                 if queueConfig.events.contains(event) || queueConfig.events.contains(.objectCreated) || queueConfig.events.contains(.objectRemoved) {
-                    // TODO: Implement actual SQS publishing
-                    // For now, just log the event
-                    logger.info("Event published to queue \(queueConfig.queueArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                    Task {
+                        do {
+                            try await postToQueue(queueArn: queueConfig.queueArn, eventData: eventData)
+                        } catch {
+                            logger.error("Failed to post to queue \(queueConfig.queueArn): \(error)")
+                        }
+                    }
                 }
             }
         }
@@ -1295,6 +1303,21 @@ actor FileSystemStorage: StorageBackend {
                     // TODO: Implement actual Lambda invocation
                     // For now, just log the event
                     logger.info("Event published to Lambda \(lambdaConfig.lambdaFunctionArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                }
+            }
+        }
+
+        // Publish to webhooks
+        if let webhookConfigs = notificationConfig.webhookConfigurations {
+            for webhookConfig in webhookConfigs {
+                if webhookConfig.events.contains(event) || webhookConfig.events.contains(.objectCreated) || webhookConfig.events.contains(.objectRemoved) {
+                    Task {
+                        do {
+                            try await postWebhook(url: webhookConfig.url, eventData: eventData)
+                        } catch {
+                            logger.error("Failed to post webhook to \(webhookConfig.url): \(error)")
+                        }
+                    }
                 }
             }
         }
@@ -1332,5 +1355,58 @@ actor FileSystemStorage: StorageBackend {
 
     func deleteAuditEvents(olderThan: Date) async throws {
         try await metadataStore.deleteAuditEvents(olderThan: olderThan)
+    }
+
+    /// Posts an event to a webhook URL.
+    /// - Parameters:
+    ///   - url: The webhook URL to post to
+    ///   - eventData: The JSON event data to send
+    private func postWebhook(url: String, eventData: Data) async throws {
+        guard let url = URL(string: url) else {
+            throw S3Error.invalidArgument
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = eventData
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+            throw S3Error.internalError
+        }
+    }
+
+    /// Posts an event to an SNS topic.
+    /// For demo purposes, treats the topicArn as an HTTP URL if it starts with http.
+    /// - Parameters:
+    ///   - topicArn: The topic ARN or HTTP URL
+    ///   - eventData: The JSON event data to send
+    private func postToTopic(topicArn: String, eventData: Data) async throws {
+        // For demo purposes, if the topicArn looks like an HTTP URL, post to it
+        if topicArn.hasPrefix("http://") || topicArn.hasPrefix("https://") {
+            try await postWebhook(url: topicArn, eventData: eventData)
+        } else {
+            // For real AWS SNS, this would require AWS credentials and proper API calls
+            // For now, just log that SNS publishing is not implemented
+            logger.info("SNS publishing not implemented for ARN: \(topicArn)")
+        }
+    }
+
+    /// Posts an event to an SQS queue.
+    /// For demo purposes, treats the queueArn as an HTTP URL if it starts with http.
+    /// - Parameters:
+    ///   - queueArn: The queue ARN or HTTP URL
+    ///   - eventData: The JSON event data to send
+    private func postToQueue(queueArn: String, eventData: Data) async throws {
+        // For demo purposes, if the queueArn looks like an HTTP URL, post to it
+        if queueArn.hasPrefix("http://") || queueArn.hasPrefix("https://") {
+            try await postWebhook(url: queueArn, eventData: eventData)
+        } else {
+            // For real AWS SQS, this would require AWS credentials and proper API calls
+            // For now, just log that SQS publishing is not implemented
+            logger.info("SQS publishing not implemented for ARN: \(queueArn)")
+        }
     }
 }

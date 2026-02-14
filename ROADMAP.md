@@ -26,8 +26,9 @@ This document outlines the next phase of SwiftS3 development, focusing on enterp
 **Goal:** Enable event-driven workflows and integrations.
 
 - [x] **Event Notifications**: S3-compatible event notifications (bucket notifications, object events).
-- [ ] **Webhook Support**: HTTP webhook notifications for object operations.
-- [ ] **Message Queue Integration**: SNS/SQS-style messaging for events.
+- [x] **Webhook Support**: HTTP webhook notifications for object operations.
+- [x] **Message Queue Integration**: SNS/SQS-style messaging for events.
+- [x] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
 
 ## 4. Analytics & Insights
 

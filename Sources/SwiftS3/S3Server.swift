@@ -4,6 +4,14 @@ import Hummingbird
 import Logging
 import NIO
 
+/// LDAP configuration for enterprise authentication
+struct LDAPConfig {
+    let server: String
+    let baseDN: String
+    let bindDN: String
+    let bindPassword: String
+}
+
 /// Configuration and initialization for the SwiftS3 server.
 struct S3Server {
     let hostname: String
@@ -11,6 +19,7 @@ struct S3Server {
     let storagePath: String
     let accessKey: String
     let secretKey: String
+    let ldapConfig: LDAPConfig?
 
     /// Starts the S3 server with the configured settings.
     func run() async throws {
@@ -33,6 +42,7 @@ struct S3Server {
             atPath: storagePath, withIntermediateDirectories: true)
 
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+        let userStore = LDAPUserStore(localStore: metadataStore, ldapConfig: ldapConfig)
         let controller = S3Controller(storage: storage)
 
         // Start Lifecycle Janitor
@@ -50,7 +60,7 @@ struct S3Server {
             return Response(status: .ok, headers: [.contentType: "text/plain"], body: .init(byteBuffer: ByteBuffer(string: metricsOutput)))
         }
         
-        router.middlewares.add(S3Authenticator(userStore: metadataStore))
+        router.middlewares.add(S3Authenticator(userStore: userStore))
         router.middlewares.add(S3VpcMiddleware(storage: storage))
         router.middlewares.add(S3AuditMiddleware(storage: storage))
         controller.addRoutes(to: router)

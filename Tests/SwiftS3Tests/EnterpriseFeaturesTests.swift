@@ -280,7 +280,7 @@ final class EnterpriseFeaturesTests: XCTestCase {
             topicConfigurations: [
                 TopicConfiguration(
                     id: "topic-config-1",
-                    topicArn: "arn:aws:sns:us-east-1:123456789012:my-topic",
+                    topicArn: "http://example.com/sns-topic",
                     events: [.objectCreatedPut, .objectRemovedDelete],
                     filter: NotificationFilter(
                         key: KeyFilter(
@@ -294,7 +294,15 @@ final class EnterpriseFeaturesTests: XCTestCase {
             queueConfigurations: [
                 QueueConfiguration(
                     id: "queue-config-1",
-                    queueArn: "arn:aws:sqs:us-east-1:123456789012:my-queue",
+                    queueArn: "http://example.com/sqs-queue",
+                    events: [.objectCreatedPut],
+                    filter: nil
+                )
+            ],
+            webhookConfigurations: [
+                WebhookConfiguration(
+                    id: "webhook-config-1",
+                    url: "https://example.com/webhook",
                     events: [.objectCreatedPut],
                     filter: nil
                 )
@@ -309,8 +317,11 @@ final class EnterpriseFeaturesTests: XCTestCase {
         XCTAssertNotNil(retrievedConfig)
         XCTAssertEqual(retrievedConfig?.topicConfigurations?.count, 1)
         XCTAssertEqual(retrievedConfig?.queueConfigurations?.count, 1)
-        XCTAssertEqual(retrievedConfig?.topicConfigurations?[0].topicArn, "arn:aws:sns:us-east-1:123456789012:my-topic")
-        XCTAssertEqual(retrievedConfig?.queueConfigurations?[0].queueArn, "arn:aws:sqs:us-east-1:123456789012:my-queue")
+        XCTAssertEqual(retrievedConfig?.webhookConfigurations?.count, 1)
+        XCTAssertEqual(retrievedConfig?.topicConfigurations?[0].topicArn, "http://example.com/sns-topic")
+        XCTAssertEqual(retrievedConfig?.queueConfigurations?[0].queueArn, "http://example.com/sqs-queue")
+        XCTAssertEqual(retrievedConfig?.webhookConfigurations?[0].url, "https://example.com/webhook")
+        XCTAssertEqual(retrievedConfig?.webhookConfigurations?[0].url, "https://example.com/webhook")
 
         // Delete notification configuration
         try await storage.deleteBucketNotification(bucket: "test-bucket")
@@ -469,7 +480,15 @@ final class EnterpriseFeaturesTests: XCTestCase {
             topicConfigurations: [
                 TopicConfiguration(
                     id: "test-topic",
-                    topicArn: "arn:aws:sns:us-east-1:123456789012:test-topic",
+                    topicArn: "http://localhost:8081/sns-topic",  // Demo HTTP endpoint
+                    events: [.objectCreatedPut],
+                    filter: nil
+                )
+            ],
+            queueConfigurations: [
+                QueueConfiguration(
+                    id: "test-queue",
+                    queueArn: "http://localhost:8081/sqs-queue",  // Demo HTTP endpoint
                     events: [.objectCreatedPut],
                     filter: nil
                 )

@@ -272,6 +272,11 @@ struct S3Controller {
             return try await putBucketVpcConfiguration(bucket: bucket, request: request, context: context)
         }
 
+        // Check if this is a Notification operation
+        if request.uri.queryParameters.get("notification") != nil {
+            return try await putBucketNotification(bucket: bucket, request: request, context: context)
+        }
+
         let ownerID = context.principal ?? "admin"
         try await storage.createBucket(name: bucket, owner: ownerID)
 
@@ -463,6 +468,11 @@ struct S3Controller {
         // Check if this is a Lifecycle operation
         if request.uri.queryParameters.get("lifecycle") != nil {
             return try await getBucketLifecycle(bucket: bucket, context: context, request: request)
+        }
+
+        // Check if this is a Notification operation
+        if request.uri.queryParameters.get("notification") != nil {
+            return try await getBucketNotification(bucket: bucket, context: context, request: request)
         }
 
         try await checkAccess(
@@ -1540,6 +1550,59 @@ struct S3Controller {
         try await storage.deleteBucketVpcConfiguration(bucket: bucket)
         logger.info("Bucket VPC configuration deleted", metadata: ["bucket": "\(bucket)"])
         return Response(status: .noContent)
+    }
+
+    /// Retrieves the notification configuration for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - context: S3 request context
+    ///   - request: The HTTP request
+    /// - Returns: HTTP response with notification configuration XML
+    /// - Throws: S3Error if access denied or configuration not found
+    func getBucketNotification(
+        bucket: String, context: S3RequestContext, request: Request
+    ) async throws -> Response {
+        try await checkAccess(
+            bucket: bucket, action: "s3:GetBucketNotification", request: request,
+            context: context)
+        guard let config = try await storage.getBucketNotification(bucket: bucket) else {
+            // Return empty configuration if none exists
+            let xml = XML.notificationConfiguration(config: NotificationConfiguration())
+            return Response(
+                status: .ok, headers: [.contentType: "application/xml"],
+                body: .init(byteBuffer: ByteBuffer(string: xml)))
+        }
+        let xml = XML.notificationConfiguration(config: config)
+        return Response(
+            status: .ok, headers: [.contentType: "application/xml"],
+            body: .init(byteBuffer: ByteBuffer(string: xml)))
+    }
+
+    /// Sets the notification configuration for the specified bucket.
+    /// - Parameters:
+    ///   - bucket: The bucket name
+    ///   - request: The HTTP request containing XML notification configuration
+    ///   - context: S3 request context
+    /// - Returns: HTTP 200 OK response on success
+    /// - Throws: S3Error if access denied or invalid XML format
+    func putBucketNotification(
+        bucket: String, request: Request, context: S3RequestContext
+    ) async throws -> Response {
+        try await checkAccess(
+            bucket: bucket, action: "s3:PutBucketNotification", request: request,
+            context: context)
+        let buffer = try await request.body.collect(upTo: 1024 * 1024)
+        let xmlString = String(buffer: buffer)
+        
+        // Basic validation - check for proper XML structure
+        guard xmlString.contains("<NotificationConfiguration>") || xmlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw S3Error.invalidArgument
+        }
+        
+        let config = XML.parseNotification(xml: xmlString)
+        try await storage.putBucketNotification(bucket: bucket, configuration: config)
+        logger.info("Bucket notification configuration updated", metadata: ["bucket": "\(bucket)"])
+        return Response(status: .ok)
     }
 
     /// Retrieves audit events for compliance and security monitoring.

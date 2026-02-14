@@ -655,6 +655,111 @@ struct XML {
 
         return LifecycleConfiguration(rules: rules)
     }
+
+    // MARK: - Notification
+
+    static func notificationConfiguration(config: NotificationConfiguration) -> String {
+        return XMLBuilder(root: "NotificationConfiguration") {
+            var xml = ""
+            
+            if let topicConfigs = config.topicConfigurations {
+                xml += topicConfigs.map { topicConfig in
+                    XMLBuilder.element("TopicConfiguration") {
+                        var configXML = ""
+                        if let id = topicConfig.id {
+                            configXML += XMLBuilder.element("Id", id)
+                        }
+                        configXML += XMLBuilder.element("Topic", topicConfig.topicArn)
+                        configXML += topicConfig.events.map { event in
+                            XMLBuilder.element("Event", event.rawValue)
+                        }.joined()
+                        if let filter = topicConfig.filter {
+                            configXML += notificationFilterXML(filter: filter)
+                        }
+                        return configXML
+                    }
+                }.joined()
+            }
+            
+            if let queueConfigs = config.queueConfigurations {
+                xml += queueConfigs.map { queueConfig in
+                    XMLBuilder.element("QueueConfiguration") {
+                        var configXML = ""
+                        if let id = queueConfig.id {
+                            configXML += XMLBuilder.element("Id", id)
+                        }
+                        configXML += XMLBuilder.element("Queue", queueConfig.queueArn)
+                        configXML += queueConfig.events.map { event in
+                            XMLBuilder.element("Event", event.rawValue)
+                        }.joined()
+                        if let filter = queueConfig.filter {
+                            configXML += notificationFilterXML(filter: filter)
+                        }
+                        return configXML
+                    }
+                }.joined()
+            }
+            
+            if let lambdaConfigs = config.lambdaConfigurations {
+                xml += lambdaConfigs.map { lambdaConfig in
+                    XMLBuilder.element("CloudFunctionConfiguration") {
+                        var configXML = ""
+                        if let id = lambdaConfig.id {
+                            configXML += XMLBuilder.element("Id", id)
+                        }
+                        configXML += XMLBuilder.element("CloudFunction", lambdaConfig.lambdaFunctionArn)
+                        configXML += lambdaConfig.events.map { event in
+                            XMLBuilder.element("Event", event.rawValue)
+                        }.joined()
+                        if let filter = lambdaConfig.filter {
+                            configXML += notificationFilterXML(filter: filter)
+                        }
+                        return configXML
+                    }
+                }.joined()
+            }
+            
+            if let webhookConfigs = config.webhookConfigurations {
+                xml += webhookConfigs.map { webhookConfig in
+                    XMLBuilder.element("WebhookConfiguration") {
+                        var configXML = ""
+                        if let id = webhookConfig.id {
+                            configXML += XMLBuilder.element("Id", id)
+                        }
+                        configXML += XMLBuilder.element("Url", webhookConfig.url)
+                        configXML += webhookConfig.events.map { event in
+                            XMLBuilder.element("Event", event.rawValue)
+                        }.joined()
+                        if let filter = webhookConfig.filter {
+                            configXML += notificationFilterXML(filter: filter)
+                        }
+                        return configXML
+                    }
+                }.joined()
+            }
+            
+            return xml
+        }.content
+    }
+    
+    private static func notificationFilterXML(filter: NotificationFilter) -> String {
+        guard let keyFilter = filter.key else { return "" }
+        return XMLBuilder.element("Filter") {
+            XMLBuilder.element("S3Key") {
+                keyFilter.filterRules.map { rule in
+                    XMLBuilder.element("FilterRule") {
+                        XMLBuilder.element("Name", rule.name.rawValue) + XMLBuilder.element("Value", rule.value)
+                    }
+                }.joined()
+            }
+        }
+    }
+
+    static func parseNotification(xml: String) -> NotificationConfiguration {
+        // TODO: Implement full XML parsing for notification configuration
+        // For now, return empty configuration
+        return NotificationConfiguration()
+    }
 }
 
 // Helper to expose private content property from XMLBuilder because I defined it private but need it here.

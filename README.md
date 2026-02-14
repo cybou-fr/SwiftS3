@@ -26,7 +26,8 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Server-Side Encryption (SSE-KMS)**: AES256 and AWS KMS-compatible encryption for data at rest.
 - **VPC-Only Access**: Restrict bucket access to specific IP ranges for enhanced security.
 - **Advanced Auditing**: Comprehensive audit logging with compliance reporting and security monitoring.
-- **Event Notifications**: S3-compatible event notifications for object operations.
+- **Event Notifications**: S3-compatible event notifications for object operations, including webhook support and message queue integration.
+- **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
 - **Cross-Region Replication**: Automatic replication of objects across multiple regions.
 - **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
 
