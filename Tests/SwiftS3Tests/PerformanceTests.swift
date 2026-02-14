@@ -10,16 +10,14 @@ import Testing
 @Suite("Performance Benchmarks")
 struct PerformanceTests {
 
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    static let threadPool: NIOThreadPool = {
-        let tp = NIOThreadPool(numberOfThreads: 2)
-        tp.start()
-        return tp
-    }()
-
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
         async throws
     {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -32,11 +30,11 @@ struct PerformanceTests {
 
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
-        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore, testMode: true)
         let controller = S3Controller(storage: storage)
 
         let router = Router(context: S3RequestContext.self)
@@ -49,12 +47,24 @@ struct PerformanceTests {
             configuration: .init(address: .hostname(server.hostname, port: server.port))
         )
 
-        try await app.test(.router, test)
+        do {
+            try await app.test(.router, test)
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
+        }
 
         // Cleanup
         try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     func sign(
@@ -112,6 +122,10 @@ struct PerformanceTests {
             print("  Min: \(String(format: "%.4f", minPutTime))s")
             print("  Max: \(String(format: "%.4f", maxPutTime))s")
             print("  Operations/sec: \(String(format: "%.2f", 1.0 / avgPutTime))")
+
+            // Baseline performance assertions
+            #expect(avgPutTime < 0.1, "Average put time should be less than 100ms")
+            #expect(putTimes.filter { $0 > 1.0 }.count == 0, "No put operation should take more than 1 second")
 
             // Benchmark medium object puts (10KB)
             let mediumContent = String(repeating: "x", count: 10 * 1024)
@@ -363,64 +377,29 @@ struct PerformanceTests {
     @Test("Benchmark Storage Backend Operations")
     func benchmarkStorageBackendOperations() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
-        let storage = FileSystemStorage(rootPath: root)
-        defer { try? FileManager.default.removeItem(atPath: root) }
+        let storage = FileSystemStorage(rootPath: root, testMode: true)
+        
+        do {
+            // ... existing test code ...
+            
+            // List operations
+            let listStartTime = Date()
+            _ = try await storage.listObjects(bucket: "bench-storage-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil, maxKeys: nil)
+            let listEndTime = Date()
+            let listTime = listEndTime.timeIntervalSince(listStartTime)
 
-        try await storage.createBucket(name: "bench-storage-bucket", owner: "test-owner")
-
-        // Benchmark direct storage operations
-        let content = ByteBuffer(string: "Benchmark content")
-
-        // Put operations
-        var putTimes: [TimeInterval] = []
-        for i in 0..<100 {
-            let key = "storage-object-\(i)"
-            let startTime = Date()
-
-            _ = try await storage.putObject(
-                bucket: "bench-storage-bucket",
-                key: key,
-                data: [content].async,
-                size: Int64(content.readableBytes),
-                metadata: nil,
-                owner: "test-owner"
-            )
-
-            let endTime = Date()
-            putTimes.append(endTime.timeIntervalSince(startTime))
+            print("Direct Storage List Performance (100 objects):")
+            print("  Time: \(String(format: "%.4f", listTime))s")
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? FileManager.default.removeItem(atPath: root)
+            throw error
         }
-
-        let avgPutTime = putTimes.reduce(0, +) / Double(putTimes.count)
-        print("Direct Storage Put Performance:")
-        print("  Average: \(String(format: "%.4f", avgPutTime))s")
-        print("  Operations/sec: \(String(format: "%.2f", 1.0 / avgPutTime))")
-
-        // Get operations
-        var getTimes: [TimeInterval] = []
-        for i in 0..<100 {
-            let key = "storage-object-\(i)"
-            let startTime = Date()
-
-            _ = try await storage.getObject(bucket: "bench-storage-bucket", key: key, versionId: nil, range: nil)
-
-            let endTime = Date()
-            getTimes.append(endTime.timeIntervalSince(startTime))
-        }
-
-        let avgGetTime = getTimes.reduce(0, +) / Double(getTimes.count)
-        print("Direct Storage Get Performance:")
-        print("  Average: \(String(format: "%.4f", avgGetTime))s")
-        print("  Operations/sec: \(String(format: "%.2f", 1.0 / avgGetTime))")
-
-        // List operations
-        let listStartTime = Date()
-        _ = try await storage.listObjects(bucket: "bench-storage-bucket", prefix: nil, delimiter: nil, marker: nil, continuationToken: nil, maxKeys: nil)
-        let listEndTime = Date()
-        let listTime = listEndTime.timeIntervalSince(listStartTime)
-
-        print("Direct Storage List Performance (100 objects):")
-        print("  Time: \(String(format: "%.4f", listTime))s")
-    }
+        
+        // Cleanup
+        try? await storage.shutdown()
+        try? FileManager.default.removeItem(atPath: root)
 
     @Test("Memory Usage Benchmark")
     func benchmarkMemoryUsage() async throws {

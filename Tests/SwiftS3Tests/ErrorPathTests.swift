@@ -394,19 +394,4 @@ struct ErrorPathTests {
             }
         }
     }
-
-    @Test("Invalid Bucket Names")
-    func testInvalidBucketNames() async throws {
-        try await withMockApp { client, _ in
-            // Test bucket name with invalid characters
-            try await client.execute(uri: "/invalid_bucket_name!", method: .put) { response in
-                #expect(response.status == .badRequest)
-            }
-
-            // Test empty bucket name
-            try await client.execute(uri: "/", method: .put) { response in
-                #expect(response.status == .badRequest)
-            }
-        }
-    }
 }

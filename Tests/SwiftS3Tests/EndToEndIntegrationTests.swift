@@ -13,13 +13,6 @@ import Testing
 /// Uses real file system and SQLite storage for realistic testing scenarios.
 struct EndToEndIntegrationTests {
 
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    static let threadPool: NIOThreadPool = {
-        let tp = NIOThreadPool(numberOfThreads: 2)
-        tp.start()
-        return tp
-    }()
-
     /// Test helper that creates a complete S3 server instance for integration testing.
     /// Sets up temporary storage directory, initializes SQLite metadata store,
     /// configures authentication, and starts a test server instance.
@@ -30,6 +23,11 @@ struct EndToEndIntegrationTests {
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
         async throws
     {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -44,11 +42,11 @@ struct EndToEndIntegrationTests {
         // Initialize SQL Metadata Store
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
-        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore, testMode: true)
         let controller = S3Controller(storage: storage)
 
         let router = Router(context: S3RequestContext.self)
@@ -61,12 +59,24 @@ struct EndToEndIntegrationTests {
             configuration: .init(address: .hostname(server.hostname, port: server.port))
         )
 
-        try await app.test(.router, test)
+        do {
+            try await app.test(.router, test)
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
+        }
 
         // Cleanup
         try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     func sign(

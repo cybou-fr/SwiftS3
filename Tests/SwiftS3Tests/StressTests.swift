@@ -10,16 +10,14 @@ import Testing
 @Suite("Stress Testing and Load Validation")
 struct StressTests {
 
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    static let threadPool: NIOThreadPool = {
-        let tp = NIOThreadPool(numberOfThreads: 2)
-        tp.start()
-        return tp
-    }()
-
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
         async throws
     {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -32,8 +30,8 @@ struct StressTests {
 
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
@@ -49,10 +47,24 @@ struct StressTests {
             configuration: .init(address: .hostname(server.hostname, port: server.port))
         )
 
-        try await app.test(.router, test)
+        do {
+            try await app.test(.router, test)
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
+        }
 
+        // Cleanup
+        try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     func sign(
@@ -75,7 +87,7 @@ struct StressTests {
             try await client.execute(
                 uri: "/\(bucket)",
                 method: .put,
-                headers: sign("PUT", "/\(bucket)")
+                headers: self.sign("PUT", "/\(bucket)")
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -88,7 +100,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucket)/\(key)",
                     method: .put,
-                    headers: sign("PUT", "/\(bucket)/\(key)", body: content),
+                    headers: self.sign("PUT", "/\(bucket)/\(key)", body: content),
                     body: ByteBuffer(string: content)
                 ) { response in
                     #expect(response.status == .ok)
@@ -99,7 +111,7 @@ struct StressTests {
             try await client.execute(
                 uri: "/\(bucket)",
                 method: .get,
-                headers: sign("GET", "/\(bucket)")
+                headers: self.sign("GET", "/\(bucket)")
             ) { response in
                 #expect(response.status == .ok)
                 let bodyString = String(buffer: response.body)
@@ -119,7 +131,7 @@ struct StressTests {
             try await client.execute(
                 uri: "/\(bucket)",
                 method: .put,
-                headers: sign("PUT", "/\(bucket)")
+                headers: self.sign("PUT", "/\(bucket)")
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -135,7 +147,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucket)/\(key)",
                     method: .put,
-                    headers: sign("PUT", "/\(bucket)/\(key)", body: content),
+                    headers: self.sign("PUT", "/\(bucket)/\(key)", body: content),
                     body: ByteBuffer(string: content)
                 ) { response in
                     #expect(response.status == .ok)
@@ -149,7 +161,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucket)/\(key)",
                     method: .get,
-                    headers: sign("GET", "/\(bucket)/\(key)")
+                    headers: self.sign("GET", "/\(bucket)/\(key)")
                 ) { response in
                     #expect(response.status == .ok)
                     #expect(response.body.readableBytes == size)
@@ -202,7 +214,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucketName)",
                     method: .get,
-                    headers: sign("GET", "/\(bucketName)")
+                    headers: self.sign("GET", "/\(bucketName)")
                 ) { response in
                     #expect(response.status == .ok)
                 }
@@ -219,7 +231,7 @@ struct StressTests {
             try await client.execute(
                 uri: "/\(bucket)",
                 method: .put,
-                headers: sign("PUT", "/\(bucket)")
+                headers: self.sign("PUT", "/\(bucket)")
             ) { response in
                 #expect(response.status == .ok)
             }
@@ -233,7 +245,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucket)/\(key)",
                     method: .put,
-                    headers: sign("PUT", "/\(bucket)/\(key)", body: content),
+                    headers: self.sign("PUT", "/\(bucket)/\(key)", body: content),
                     body: ByteBuffer(string: content)
                 ) { response in
                     #expect(response.status == .ok)
@@ -243,7 +255,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucket)/\(key)",
                     method: .get,
-                    headers: sign("GET", "/\(bucket)/\(key)")
+                    headers: self.sign("GET", "/\(bucket)/\(key)")
                 ) { response in
                     #expect(response.status == .ok)
                     #expect(String(buffer: response.body) == content)
@@ -253,7 +265,7 @@ struct StressTests {
                 try await client.execute(
                     uri: "/\(bucket)/\(key)",
                     method: .delete,
-                    headers: sign("DELETE", "/\(bucket)/\(key)")
+                    headers: self.sign("DELETE", "/\(bucket)/\(key)")
                 ) { response in
                     #expect(response.status == .noContent || response.status == .ok)
                 }

@@ -25,7 +25,7 @@ final class EnterpriseFeaturesTests: XCTestCase {
             threadPool: threadPool
         )
 
-        storage = FileSystemStorage(rootPath: tempDir, metadataStore: metadataStore)
+        storage = FileSystemStorage(rootPath: tempDir, metadataStore: metadataStore, testMode: true)
 
         // Create a test bucket
         try await storage.createBucket(name: "test-bucket", owner: "test-owner")

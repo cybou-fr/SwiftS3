@@ -89,13 +89,19 @@ actor FileSystemStorage: StorageBackend {
     let fileSystem = FileSystem.shared
     let metadataStore: MetadataStore
     let logger = Logger(label: "SwiftS3.FileSystemStorage")
-    let httpClient: HTTPClient
+    let httpClient: HTTPClient?
+    let testMode: Bool
 
     /// Initializes a new file system storage instance.
-    init(rootPath: String, metadataStore: MetadataStore? = nil) {
+    init(rootPath: String, metadataStore: MetadataStore? = nil, testMode: Bool = false) {
         self.rootPath = FilePath(rootPath)
         self.metadataStore = metadataStore ?? FileSystemMetadataStore(rootPath: rootPath)
-        self.httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
+        self.testMode = testMode
+        if !testMode {
+            self.httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
+        } else {
+            self.httpClient = nil
+        }
     }
 
     private func bucketPath(_ name: String) -> FilePath {
@@ -1455,6 +1461,12 @@ actor FileSystemStorage: StorageBackend {
     ///   - url: The webhook URL to post to
     ///   - eventData: The JSON event data to send
     private func postWebhook(url: String, eventData: Data) async throws {
+        // Skip network calls in test mode
+        if testMode {
+            logger.info("Test mode: Skipping webhook post to \(url)")
+            return
+        }
+
         guard let url = URL(string: url) else {
             throw S3Error.invalidArgument
         }
@@ -1527,7 +1539,9 @@ actor FileSystemStorage: StorageBackend {
 
     /// Shuts down the HTTP client
     func shutdown() async throws {
-        try await httpClient.shutdown()
+        if let httpClient = httpClient {
+            try await httpClient.shutdown()
+        }
     }
 
     func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {
@@ -1565,6 +1579,11 @@ actor FileSystemStorage: StorageBackend {
 
         // Note: In a real implementation, you would add AWS signature headers here
         // For now, this will fail without proper authentication
+
+        guard let httpClient = httpClient else {
+            logger.info("Test mode: Skipping Lambda invocation")
+            return
+        }
 
         let response = try await httpClient.execute(request, timeout: .seconds(30))
 
