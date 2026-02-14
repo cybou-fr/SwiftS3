@@ -74,6 +74,11 @@ actor LifecycleJanitor {
         logger.info("Janitor completed lifecycle expiration check")
     }
 
+    /// Applies a single lifecycle rule to a bucket
+    /// - Parameters:
+    ///   - rule: The lifecycle rule to apply
+    ///   - bucket: The bucket name to apply the rule to
+    /// - Throws: Storage errors if rule application fails
     private func applyRule(_ rule: LifecycleConfiguration.Rule, to bucket: String) async throws {
         let prefix = rule.filter.prefix ?? ""
 
@@ -88,6 +93,12 @@ actor LifecycleJanitor {
         }
     }
 
+    /// Applies current version expiration rule to objects in a bucket
+    /// - Parameters:
+    ///   - rule: The lifecycle rule containing expiration settings
+    ///   - bucket: The bucket name
+    ///   - days: Number of days after which objects expire
+    /// - Throws: Storage errors if expiration application fails
     private func applyCurrentVersionExpiration(rule: LifecycleConfiguration.Rule, bucket: String, days: Int) async throws {
         let prefix = rule.filter.prefix
         let tagFilter = rule.filter.tag
@@ -128,6 +139,12 @@ actor LifecycleJanitor {
         }
     }
 
+    /// Applies non-current version expiration rule to object versions in a bucket
+    /// - Parameters:
+    ///   - rule: The lifecycle rule containing non-current version expiration settings
+    ///   - bucket: The bucket name
+    ///   - noncurrentExpiration: The non-current version expiration configuration
+    /// - Throws: Storage errors if expiration application fails
     private func applyNoncurrentVersionExpiration(rule: LifecycleConfiguration.Rule, bucket: String, noncurrentExpiration: LifecycleConfiguration.Rule.NoncurrentVersionExpiration) async throws {
         let prefix = rule.filter.prefix
         let tagFilter = rule.filter.tag
@@ -202,6 +219,8 @@ actor LifecycleJanitor {
         }
     }
 
+    /// Performs garbage collection of orphaned metadata and incomplete operations
+    /// - Throws: Storage errors if garbage collection fails
     private func performGarbageCollection() async throws {
         logger.info("Janitor starting garbage collection")
         

@@ -73,7 +73,15 @@ protocol MetadataStore: Sendable {
     /// - Throws: Error if storage operation fails
     func saveMetadata(bucket: String, key: String, metadata: ObjectMetadata) async throws
 
-    /// Delete metadata for an object
+    /// Delete metadata for an object.
+    /// Removes object metadata from the store. If versionId is specified, only that version is deleted.
+    /// If versionId is nil, creates a delete marker for versioned buckets or removes the object entirely.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key
+    ///   - versionId: Specific version to delete (nil for latest/current)
+    /// - Throws: Error if object/version doesn't exist or deletion fails
     func deleteMetadata(bucket: String, key: String, versionId: String?) async throws
 
     /// List objects in a bucket with optional filtering and pagination.
@@ -94,44 +102,190 @@ protocol MetadataStore: Sendable {
         continuationToken: String?, maxKeys: Int?
     ) async throws -> ListObjectsResult
 
+    /// Shutdown the metadata store and release resources.
+    /// Ensures all pending operations complete and connections are properly closed.
+    /// Should be called when the application is terminating.
+    ///
+    /// - Throws: Error if shutdown fails
     func shutdown() async throws
 
     // ACLs
+    /// Retrieve the access control policy for a bucket or object.
+    /// Returns the ACL that defines permissions for the specified resource.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (nil for bucket ACL)
+    ///   - versionId: Object version ID (nil for current version)
+    /// - Returns: Access control policy with grants and owner information
+    /// - Throws: Error if resource doesn't exist or access is denied
     func getACL(bucket: String, key: String?, versionId: String?) async throws
         -> AccessControlPolicy
+
+    /// Set the access control policy for a bucket or object.
+    /// Updates the ACL with new grants and permissions for the specified resource.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (nil for bucket ACL)
+    ///   - versionId: Object version ID (nil for current version)
+    ///   - acl: New access control policy to apply
+    /// - Throws: Error if update fails or access is denied
     func putACL(bucket: String, key: String?, versionId: String?, acl: AccessControlPolicy)
         async throws
 
     // Versioning
+    /// Get the versioning configuration for a bucket.
+    /// Returns whether versioning is enabled, suspended, or not configured.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Returns: Versioning configuration or nil if not set
+    /// - Throws: Error if bucket doesn't exist
     func getBucketVersioning(bucket: String) async throws -> VersioningConfiguration?
+
+    /// Set the versioning configuration for a bucket.
+    /// Enables or suspends versioning for all objects in the bucket.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - configuration: New versioning configuration
+    /// - Throws: Error if update fails
     func setBucketVersioning(bucket: String, configuration: VersioningConfiguration) async throws
 
+    /// List all versions of objects in a bucket with optional filtering and pagination.
+    /// Returns all versions (including delete markers) for versioned objects.
+    /// Supports prefix filtering and pagination using key and version markers.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name to list versions from
+    ///   - prefix: Key prefix filter
+    ///   - delimiter: Grouping delimiter for hierarchical listing
+    ///   - keyMarker: Key pagination marker
+    ///   - versionIdMarker: Version ID pagination marker
+    ///   - maxKeys: Maximum versions to return
+    /// - Returns: ListVersionsResult with version information and pagination details
+    /// - Throws: Error if bucket doesn't exist or query fails
     func listObjectVersions(
         bucket: String, prefix: String?, delimiter: String?, keyMarker: String?,
         versionIdMarker: String?, maxKeys: Int?
     ) async throws -> ListVersionsResult
 
     // Lifecycle
+    /// Create a new bucket with the specified owner.
+    /// Initializes bucket metadata and sets up default configurations.
+    ///
+    /// - Parameters:
+    ///   - name: Bucket name
+    ///   - owner: Owner identifier for the bucket
+    /// - Throws: Error if bucket already exists or creation fails
     func createBucket(name: String, owner: String) async throws
+
+    /// Delete a bucket and all its contents.
+    /// Removes all objects, versions, and metadata associated with the bucket.
+    ///
+    /// - Parameter name: Bucket name to delete
+    /// - Throws: Error if bucket doesn't exist, is not empty, or deletion fails
     func deleteBucket(name: String) async throws
 
     // Tagging
+    /// Retrieve tags for a bucket or object.
+    /// Returns all key-value tags associated with the specified resource.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (nil for bucket tags)
+    ///   - versionId: Object version ID (nil for current version)
+    /// - Returns: Array of S3 tags
+    /// - Throws: Error if resource doesn't exist
     func getTags(bucket: String, key: String?, versionId: String?) async throws -> [S3Tag]
+
+    /// Set tags for a bucket or object.
+    /// Replaces all existing tags with the new set of tags.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (nil for bucket tags)
+    ///   - versionId: Object version ID (nil for current version)
+    ///   - tags: Array of tags to set
+    /// - Throws: Error if update fails
     func putTags(bucket: String, key: String?, versionId: String?, tags: [S3Tag]) async throws
+
+    /// Remove all tags from a bucket or object.
+    /// Deletes all key-value tags associated with the specified resource.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (nil for bucket tags)
+    ///   - versionId: Object version ID (nil for current version)
+    /// - Throws: Error if deletion fails
     func deleteTags(bucket: String, key: String?, versionId: String?) async throws
 
     // Lifecycle
+    /// Get the lifecycle configuration for a bucket.
+    /// Returns rules for automatic object expiration and transitions.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Returns: Lifecycle configuration or nil if not set
+    /// - Throws: Error if bucket doesn't exist
     func getLifecycle(bucket: String) async throws -> LifecycleConfiguration?
+
+    /// Set the lifecycle configuration for a bucket.
+    /// Defines rules for automatic object expiration, deletion, and storage class transitions.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - configuration: New lifecycle configuration
+    /// - Throws: Error if update fails
     func putLifecycle(bucket: String, configuration: LifecycleConfiguration) async throws
+
+    /// Remove the lifecycle configuration from a bucket.
+    /// Disables automatic lifecycle management for the bucket.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Throws: Error if deletion fails
     func deleteLifecycle(bucket: String) async throws
 
     // Object Lock
+    /// Get the object lock configuration for a bucket.
+    /// Returns retention and legal hold settings for the bucket.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Returns: Object lock configuration or nil if not enabled
+    /// - Throws: Error if bucket doesn't exist
     func getObjectLockConfiguration(bucket: String) async throws -> ObjectLockConfiguration?
+
+    /// Set the object lock configuration for a bucket.
+    /// Enables object lock with specified retention and legal hold policies.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - configuration: New object lock configuration
+    /// - Throws: Error if update fails or bucket already has object lock enabled
     func putObjectLockConfiguration(bucket: String, configuration: ObjectLockConfiguration) async throws
 
     // Replication
+    /// Get the replication configuration for a bucket.
+    /// Returns rules for cross-region replication of objects.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Returns: Replication configuration or nil if not set
+    /// - Throws: Error if bucket doesn't exist
     func getBucketReplication(bucket: String) async throws -> ReplicationConfiguration?
+
+    /// Set the replication configuration for a bucket.
+    /// Enables automatic replication of objects to specified destination buckets.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - configuration: New replication configuration
+    /// - Throws: Error if update fails
     func putBucketReplication(bucket: String, configuration: ReplicationConfiguration) async throws
+
+    /// Remove the replication configuration from a bucket.
+    /// Disables automatic replication for the bucket.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Throws: Error if deletion fails
     func deleteBucketReplication(bucket: String) async throws
 
     // Event Notifications

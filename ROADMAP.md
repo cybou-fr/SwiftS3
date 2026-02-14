@@ -1,59 +1,49 @@
 # SwiftS3 Enterprise Roadmap
 
-This document outlines the next phase of SwiftS3 development, focusing on enterprise-grade **server-side** features to compete with commercial S3-compatible solutions like MinIO and AWS S3.
+## Quality Assurance and Testing
 
-## 1. Advanced Storage & Data Protection
+- **Test Coverage Improvement**: Increase unit test coverage from current levels to 90%+ across all modules
+  - Target: Achieve comprehensive coverage for core S3 operations, authentication, storage backends, and metadata stores
+  - Implement missing test cases for error paths, edge cases, and concurrent operations
+- **Test Suite Stabilization**: Fix all currently failing tests (20 issues identified) and ensure 100% test pass rate
+  - Address flaky tests and improve test reliability
+  - Add automated test runs in CI/CD pipeline
+- **Integration Testing**: Expand integration test coverage for end-to-end S3 API workflows
+  - Test multipart uploads, versioning, lifecycle management, and enterprise features
+  - Add performance regression tests and load testing
+- **Test Infrastructure**: Enhance testing tools and frameworks
+  - Implement automated coverage reporting and quality gates
+  - Add fuzz testing for API inputs and data parsing
 
-**Goal:** Enterprise-grade data protection, durability, and availability.
+## Documentation and Code Quality
 
-- [x] **Erasure Coding**: Implement erasure coding for data protection and recovery (like MinIO).
-- [x] **Bitrot Protection**: Detect and repair data corruption using checksums.
-- [x] **Storage Classes**: Support multiple storage tiers (Hot, Warm, Cold, Archive) with automatic tiering.
-- [x] **Cross-Region Replication**: Replicate objects across multiple regions for disaster recovery.
-- [x] **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
+- **Source Code Documentation**: Improve function/method documentation coverage from 61.6% to 85%+
+  - Add comprehensive docstrings for all public APIs with parameter descriptions and examples
+  - Document internal functions and complex algorithms
+  - Generate API documentation using Swift-DocC
+- **Code Comments**: Enhance inline comments for complex logic and business rules
+  - Document design decisions and architectural choices
+  - Add TODO/FIXME comments for known issues
+- **README and Guides**: Expand user documentation
+  - Add deployment guides, configuration examples, and troubleshooting
+  - Create API reference documentation
+  - Include performance tuning and best practices
+## Code Completion and Technical Debt
 
-## 2. Advanced Security & Compliance
-
-**Goal:** Enterprise security features and compliance capabilities.
-
-- [x] **SSE-KMS**: Server-side encryption with customer-managed keys.
-- [x] **VPC-Only Access**: Restrict access to specific VPCs and private networks.
-- [x] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
-- [x] **Advanced Auditing**: Detailed audit logs with compliance reporting.
-
-## 3. Event-Driven Architecture
-
-**Goal:** Enable event-driven workflows and integrations.
-
-- [x] **Event Notifications**: S3-compatible event notifications (bucket notifications, object events).
-- [x] **Webhook Support**: HTTP webhook notifications for object operations.
-- [x] **Message Queue Integration**: SNS/SQS-style messaging for events.
-- [x] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
-
-## 4. Analytics & Insights
-
-**Goal:** Provide storage analytics and operational insights.
-
-- [x] **Storage Analytics**: Usage analytics, access patterns, and cost optimization insights.
-- [x] **Access Analyzer**: Security analysis for bucket access patterns.
-- [x] **Inventory Reports**: Automated inventory generation with metadata.
-- [x] **Performance Metrics**: Detailed performance monitoring and optimization.
-
-## 5. Advanced Operations
-
-**Goal:** Large-scale operations and automation.
-
-- [x] **Batch Operations**: Large-scale batch operations on objects (like AWS S3 Batch).
-- [x] **S3 Select**: SQL queries directly on objects without downloading.
-- [x] **Multipart Upload Optimization**: Enhanced multipart upload with better concurrency.
-- [ ] **Transfer Acceleration**: Optimized data transfer for global users.
-
-
-## 6. Developer Experience
-
-**Goal:** Enhanced developer tools and integrations.
-
-- [x] **API Compatibility Testing**: Automated testing against AWS S3 API specification.
+- **Address Known TODOs**: Resolve all identified TODO items in the codebase
+  - Implement XML body ACL support in S3Controller
+  - Complete XML parsing for notification configuration
+  - Enhance audit logging with proper user identity and request parameters
+  - Implement actual Lambda function invocation for event notifications
+  - Support versioned bulk delete operations
+  - Complete LDAP authentication implementation
+- **Error Handling**: Improve error handling and user feedback
+  - Add comprehensive error messages and logging
+  - Implement graceful degradation for partial failures
+- **Performance Optimization**: Optimize performance bottlenecks
+  - Profile and optimize slow operations (e.g., list operations with 1000+ objects)
+  - Implement caching for frequently accessed metadata
+  - Add connection pooling and resource management
 
 ---
 

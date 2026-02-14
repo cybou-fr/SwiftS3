@@ -10,11 +10,22 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
     let storage: any StorageBackend
     let logger: Logger
 
+    /// Initializes the audit middleware with storage backend and logger
+    /// - Parameters:
+    ///   - storage: Storage backend for retrieving audit data
+    ///   - logger: Logger for audit events (defaults to SwiftS3.Audit label)
     init(storage: any StorageBackend, logger: Logger = Logger(label: "SwiftS3.Audit")) {
         self.storage = storage
         self.logger = logger
     }
 
+    /// Handles incoming requests by logging audit events for compliance and security monitoring
+    /// - Parameters:
+    ///   - request: The incoming HTTP request
+    ///   - context: Request context containing request metadata
+    ///   - next: Next middleware in the chain
+    /// - Returns: The response from the next middleware
+    /// - Throws: Any error thrown by the next middleware
     func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
         let startTime = Date()
         let requestId = UUID().uuidString
@@ -74,6 +85,9 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
         return response!
     }
 
+    /// Extracts the principal (access key) from the request for audit logging
+    /// - Parameter request: The HTTP request containing authentication information
+    /// - Returns: The access key ID of the authenticated principal, or "anonymous" if not found
     private func extractPrincipal(from request: Request) -> String {
         // Try to extract from Authorization header
         if let authHeader = request.headers[.authorization] {
@@ -91,6 +105,9 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
         return "anonymous"
     }
 
+    /// Extracts the source IP address from the request headers
+    /// - Parameter request: The HTTP request containing IP information
+    /// - Returns: The source IP address, or nil if not found
     private func extractSourceIp(from request: Request) -> String? {
         // Try X-Forwarded-For header first (for proxies/load balancers)
         if let forwardedFor = request.headers[HTTPField.Name("X-Forwarded-For")!] {
@@ -106,6 +123,9 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
         return "127.0.0.1"
     }
 
+    /// Extracts bucket and key information from the request path
+    /// - Parameter path: The URL path of the request
+    /// - Returns: A tuple containing the bucket name and object key, or nil if not parseable
     private func extractBucketAndKey(from path: String) -> (bucket: String?, key: String?) {
         let components = path.split(separator: "/").filter { !$0.isEmpty }
 
@@ -121,6 +141,9 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
         return (bucket, nil)
     }
 
+    /// Extracts the operation type from the HTTP request method and headers
+    /// - Parameter request: The HTTP request containing method and headers
+    /// - Returns: A string describing the S3 operation being performed
     private func extractOperation(from request: Request) -> String {
         let method = request.method.rawValue
         let path = request.uri.path
@@ -139,6 +162,12 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
         return "\(method) \(path)"
     }
 
+    /// Determines the audit event type and status based on request/response/error information
+    /// - Parameters:
+    ///   - request: The HTTP request
+    ///   - response: The HTTP response, if any
+    ///   - error: Any error that occurred during processing
+    /// - Returns: A tuple containing the audit event type and status string
     private func determineEventTypeAndStatus(from request: Request, response: Response?, error: Error?) -> (AuditEventType, String) {
         let method = request.method
         let path = request.uri.path
@@ -209,6 +238,11 @@ struct S3AuditMiddleware<Context: RequestContext>: RouterMiddleware {
         return (eventType, status)
     }
 
+    /// Extracts additional metadata from request and response for audit logging
+    /// - Parameters:
+    ///   - request: The HTTP request
+    ///   - response: The HTTP response, if any
+    /// - Returns: Dictionary of additional audit data, or nil if no data available
     private func extractAdditionalData(from request: Request, response: Response?) -> [String: String]? {
         var data: [String: String] = [:]
 

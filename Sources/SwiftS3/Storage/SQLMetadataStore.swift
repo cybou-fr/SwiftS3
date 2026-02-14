@@ -1207,6 +1207,11 @@ extension SQLMetadataStore: UserStore {
         _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
     }
 
+    /// Remove the replication configuration from a bucket.
+    /// Disables automatic replication for the bucket.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Throws: Error if deletion fails
     func deleteBucketReplication(bucket: String) async throws {
         let query = "DELETE FROM bucket_replication WHERE bucket_name = ?"
         _ = try await connection.query(query, [.text(bucket)])
@@ -1214,6 +1219,12 @@ extension SQLMetadataStore: UserStore {
 
     // MARK: - Event Notifications
 
+    /// Get the notification configuration for a bucket.
+    /// Returns event notification settings for S3 operations.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Returns: Notification configuration or nil if not set
+    /// - Throws: Error if bucket doesn't exist
     func getBucketNotification(bucket: String) async throws -> NotificationConfiguration? {
         let query = "SELECT configuration FROM bucket_notification WHERE bucket_name = ?"
         let result = try await connection.query(query, [.text(bucket)])
@@ -1227,6 +1238,13 @@ extension SQLMetadataStore: UserStore {
         return try JSONDecoder().decode(NotificationConfiguration.self, from: configData)
     }
 
+    /// Set the notification configuration for a bucket.
+    /// Configures event notifications for S3 operations like object creation/deletion.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - configuration: New notification configuration
+    /// - Throws: Error if update fails
     func putBucketNotification(bucket: String, configuration: NotificationConfiguration) async throws {
         let data = try JSONEncoder().encode(configuration)
         let configJSON = String(data: data, encoding: .utf8) ?? ""
@@ -1235,6 +1253,11 @@ extension SQLMetadataStore: UserStore {
         _ = try await connection.query(query, [.text(bucket), .text(configJSON)])
     }
 
+    /// Remove the notification configuration from a bucket.
+    /// Disables event notifications for the bucket.
+    ///
+    /// - Parameter bucket: Bucket name
+    /// - Throws: Error if deletion fails
     func deleteBucketNotification(bucket: String) async throws {
         let query = "DELETE FROM bucket_notification WHERE bucket_name = ?"
         _ = try await connection.query(query, [.text(bucket)])
@@ -1412,6 +1435,12 @@ extension SQLMetadataStore: UserStore {
 
     // MARK: - Batch Operations
 
+    /// Create a new batch job for large-scale object operations.
+    /// Initializes a batch job with the specified configuration and returns the job ID.
+    ///
+    /// - Parameter job: Batch job configuration
+    /// - Returns: Unique job ID for tracking the batch operation
+    /// - Throws: Error if job creation fails
     func createBatchJob(job: BatchJob) async throws -> String {
         let operationParamsJSON = String(data: try JSONEncoder().encode(job.operation.parameters), encoding: .utf8) ?? "{}"
         let manifestFieldsJSON = String(data: try JSONEncoder().encode(job.manifest.spec.fields), encoding: .utf8) ?? "[]"
@@ -1450,6 +1479,12 @@ extension SQLMetadataStore: UserStore {
         return job.id
     }
 
+    /// Retrieve a batch job by its ID.
+    /// Returns the current status and progress of the batch operation.
+    ///
+    /// - Parameter jobId: Unique batch job identifier
+    /// - Returns: Batch job information or nil if not found
+    /// - Throws: Error if query fails
     func getBatchJob(jobId: String) async throws -> BatchJob? {
         let query = """
             SELECT id, operation_type, operation_parameters,
@@ -1550,6 +1585,14 @@ extension SQLMetadataStore: UserStore {
         return (jobs: jobs, nextContinuationToken: nil)
     }
 
+    /// Update the status of a batch job.
+    /// Changes the job status and optionally records failure messages.
+    ///
+    /// - Parameters:
+    ///   - jobId: Unique batch job identifier
+    ///   - status: New job status
+    ///   - message: Optional failure message
+    /// - Throws: Error if update fails
     func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws {
         let failureReasonsJSON = String(data: try JSONEncoder().encode(message != nil ? [message!] : []), encoding: .utf8) ?? "[]"
         let completedAt = status == .complete || status == .failed || status == .cancelled ?

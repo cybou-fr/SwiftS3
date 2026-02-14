@@ -11,6 +11,8 @@ struct S3RequestContext: RequestContext {
     /// The authenticated principal (access key) for the current request.
     var principal: String?
 
+    /// Initializes a new S3RequestContext with the given source
+    /// - Parameter source: The source for the core request context
     init(source: Source) {
         self.coreContext = .init(source: source)
         self.principal = nil

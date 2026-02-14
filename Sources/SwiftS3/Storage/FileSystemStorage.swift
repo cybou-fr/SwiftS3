@@ -439,6 +439,15 @@ actor FileSystemStorage: StorageBackend {
         }
     }
 
+    /// Delete multiple objects from a bucket in a single operation.
+    /// Attempts to delete all specified keys and returns the list of successfully deleted keys.
+    /// Ignores errors for individual objects and continues with the bulk operation.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - keys: Array of object keys to delete
+    /// - Returns: Array of keys that were successfully deleted
+    /// - Throws: Error if bucket doesn't exist
     func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
         var deleted: [String] = []
         for key in keys {
@@ -848,6 +857,12 @@ actor FileSystemStorage: StorageBackend {
             at: uPath, strategy: .platformDefault, recursively: true)
     }
 
+    /// Clean up orphaned multipart upload directories older than the specified age.
+    /// Removes upload directories that are incomplete and haven't been modified recently.
+    /// Helps prevent disk space waste from abandoned multipart uploads.
+    ///
+    /// - Parameter olderThan: Time interval in seconds - uploads older than this will be cleaned
+    /// - Throws: File system errors if cleanup fails
     func cleanupOrphanedUploads(olderThan: TimeInterval) async throws {
         let buckets = try await listBuckets()
         let cutoffDate = Date().addingTimeInterval(-olderThan)

@@ -40,6 +40,9 @@ public enum PolicyPrincipal: Codable, Sendable {
     case any
     case specific([String: String])  // e.g. ["AWS": "arn:aws:iam::123:user/bob"]
 
+    /// Decodes a PolicyPrincipal from JSON, supporting "*" for any principal or object notation
+    /// - Parameter decoder: The decoder to read data from
+    /// - Throws: DecodingError if the principal format is invalid
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let str = try? container.decode(String.self), str == "*" {
@@ -62,6 +65,9 @@ public enum PolicyPrincipal: Codable, Sendable {
             in: container, debugDescription: "Principal must be '*' or object")
     }
 
+    /// Encodes the PolicyPrincipal to JSON, using "*" for any principal or object notation for specific principals
+    /// - Parameter encoder: The encoder to write data to
+    /// - Throws: EncodingError if encoding fails
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
@@ -77,6 +83,9 @@ public enum SingleOrArray<T: Codable & Sendable>: Codable, Sendable {
     case single(T)
     case array([T])
 
+    /// Decodes either a single value or an array of values from JSON
+    /// - Parameter decoder: The decoder to read data from
+    /// - Throws: DecodingError if the data is neither a single value nor an array
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let val = try? container.decode(T.self) {
@@ -91,6 +100,9 @@ public enum SingleOrArray<T: Codable & Sendable>: Codable, Sendable {
             in: container, debugDescription: "Expected single value or array")
     }
 
+    /// Encodes the SingleOrArray to JSON as either a single value or an array
+    /// - Parameter encoder: The encoder to write data to
+    /// - Throws: EncodingError if encoding fails
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
@@ -101,6 +113,7 @@ public enum SingleOrArray<T: Codable & Sendable>: Codable, Sendable {
         }
     }
 
+    /// Returns all values as an array, normalizing single values into single-element arrays
     public var values: [T] {
         switch self {
         case .single(let v): return [v]

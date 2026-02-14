@@ -286,6 +286,12 @@ struct S3Authenticator: RouterMiddleware {
 }
 
 enum HMAC256 {
+    /// Computes HMAC-SHA256 signature for a message using a key
+    /// - Parameters:
+    ///   - message: The message to sign
+    ///   - key: The key data for HMAC computation
+    /// - Returns: HMAC-SHA256 signature as Data
+    /// - Throws: Crypto errors if computation fails
     static func compute(_ message: String, key: Data) throws -> Data {
         let symmetricKey = SymmetricKey(data: key)
         let signature = HMAC<SHA256>.authenticationCode(
@@ -293,6 +299,12 @@ enum HMAC256 {
         return Data(signature)
     }
 
+    /// Computes HMAC-SHA256 signature for a message using a string key
+    /// - Parameters:
+    ///   - message: The message to sign
+    ///   - key: The key string for HMAC computation
+    /// - Returns: HMAC-SHA256 signature as Data
+    /// - Throws: Crypto errors if computation fails
     static func compute(_ message: String, key: String) throws -> Data {
         let symmetricKey = SymmetricKey(data: Data(key.utf8))
         let signature = HMAC<SHA256>.authenticationCode(

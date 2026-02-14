@@ -60,17 +60,24 @@ struct XMLBuilder {
         return "    <\(name)\(attrs)>\n\(content())    </\(name)>\n"
     }
 
-    // Helper to format attributes
+    /// Formats XML attributes into a string for inclusion in element tags
+    /// - Parameter attributes: Dictionary of attribute name-value pairs
+    /// - Returns: Space-separated string of name="value" pairs, or empty string if no attributes
     private static func formatAttributes(_ attributes: [String: String]) -> String {
         guard !attributes.isEmpty else { return "" }
         return " " + attributes.map { "\($0.key)=\"\($0.value)\"" }.joined(separator: " ")
     }
 
+    /// Formats XML attributes into a string for inclusion in element tags (instance method)
+    /// - Parameter attributes: Dictionary of attribute name-value pairs
+    /// - Returns: Space-separated string of name="value" pairs, or empty string if no attributes
     private func formatAttributes(_ attributes: [String: String]) -> String {
         return XMLBuilder.formatAttributes(attributes)
     }
 
-    // Basic XML Escaping
+    /// Escapes special XML characters in a string for safe inclusion in XML content
+    /// - Parameter string: The string to escape
+    /// - Returns: XML-safe string with &, <, >, and " characters escaped
     private static func escape(_ string: String) -> String {
         return
             string
@@ -81,7 +88,9 @@ struct XMLBuilder {
             .replacingOccurrences(of: "'", with: "&apos;")
     }
 
-    // For instance method access if needed, though static is easier for functional composition
+    /// Escapes special XML characters in a string for safe inclusion in XML content (instance method)
+    /// - Parameter string: The string to escape
+    /// - Returns: XML-safe string with &, <, >, and " characters escaped
     private func escape(_ string: String) -> String {
         return XMLBuilder.escape(string)
     }

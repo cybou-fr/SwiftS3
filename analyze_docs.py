@@ -7,7 +7,7 @@ def analyze_file(filepath):
     
     func_lines = []
     for i, line in enumerate(lines):
-        if re.match(r'^\s*func\s+\w+', line):
+        if re.match(r'^\s*(public\s+|private\s+|internal\s+|fileprivate\s+)?(static\s+)?(func\s+\w+|init\s*\()', line):
             func_lines.append(i)
     
     total = len(func_lines)

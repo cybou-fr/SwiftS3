@@ -106,6 +106,11 @@ struct S3Error: Error, @unchecked Sendable, Equatable {
 }
 
 extension S3Error: ResponseGenerator {
+    /// Generates an HTTP response for this S3 error.
+    /// - Parameters:
+    ///   - request: The incoming HTTP request that caused the error
+    ///   - context: The request context
+    /// - Returns: An HTTP response with XML error details
     public func response(from request: Request, context: some RequestContext) throws -> Response {
         let headers: HTTPFields = [
             .contentType: "application/xml"
@@ -117,6 +122,12 @@ extension S3Error: ResponseGenerator {
 }
 
 struct S3ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
+    /// Handles incoming requests and converts S3Error exceptions to proper HTTP error responses.
+    /// - Parameters:
+    ///   - request: The incoming HTTP request
+    ///   - context: The request context
+    ///   - next: The next middleware in the chain
+    /// - Returns: The response from the next middleware, or an error response if an S3Error was thrown
     func handle(_ request: Input, context: Context, next: (Input, Context) async throws -> Output)
         async throws -> Output
     {

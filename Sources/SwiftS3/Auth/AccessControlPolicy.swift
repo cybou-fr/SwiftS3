@@ -58,10 +58,18 @@ public struct Grantee: Codable, Sendable {
         self.uri = uri
     }
 
+    /// Creates a group grantee with the specified URI
+    /// - Parameter uri: The URI identifying the group (e.g., AllUsers or AuthenticatedUsers)
+    /// - Returns: A Grantee instance representing the group
     public static func group(uri: String) -> Grantee {
         return Grantee(type: "Group", uri: uri)
     }
 
+    /// Creates a user grantee with the specified ID and optional display name
+    /// - Parameters:
+    ///   - id: The canonical user ID
+    ///   - displayName: Optional display name for the user
+    /// - Returns: A Grantee instance representing the user
     public static func user(id: String, displayName: String? = nil) -> Grantee {
         return Grantee(id: id, displayName: displayName, type: "CanonicalUser")
     }
@@ -87,6 +95,10 @@ public enum CannedACL: String, Sendable {
     case publicReadWrite = "public-read-write"
     case authenticatedRead = "authenticated-read"
 
+    /// Creates an AccessControlPolicy with the canned ACL configuration
+    /// - Parameter owner: The owner of the resource who will receive full control permissions
+    /// - Returns: An AccessControlPolicy with appropriate grants based on the canned ACL type
+    /// - Note: Owner always receives FULL_CONTROL permission regardless of canned ACL type
     public func createPolicy(owner: Owner) -> AccessControlPolicy {
         var grants: [Grant] = []
 

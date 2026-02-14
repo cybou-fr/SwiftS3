@@ -70,6 +70,17 @@ struct XML {
         }.content
     }
 
+    /// Generates XML response for list objects V2 API calls
+    /// - Parameters:
+    ///   - bucket: Name of the bucket
+    ///   - result: ListObjectsResult containing objects and pagination info
+    ///   - prefix: Key prefix filter
+    ///   - continuationToken: Token for pagination
+    ///   - maxKeys: Maximum number of keys to return
+    ///   - isTruncated: Whether the result is truncated
+    ///   - keyCount: Number of keys returned in this response
+    /// - Returns: XML string formatted according to S3 API specification for list objects V2 responses
+    /// - Note: Includes object details, common prefixes, and pagination information
     // List Objects V2
     static func listObjectsV2(
         bucket: String, result: ListObjectsResult, prefix: String, continuationToken: String,
@@ -116,6 +127,11 @@ struct XML {
         }.content
     }
 
+    /// Generates XML for copy object operation result.
+    /// Returns the metadata of the newly created copy in AWS S3 format.
+    ///
+    /// - Parameter metadata: Metadata of the copied object
+    /// - Returns: XML string in CopyObjectResult format
     static func copyObjectResult(metadata: ObjectMetadata) -> String {
         let lastModified = ISO8601DateFormatter().string(from: metadata.lastModified)
         let etag = metadata.eTag ?? ""
@@ -127,6 +143,14 @@ struct XML {
         }.content
     }
 
+    /// Generates XML for multipart upload initiation result.
+    /// Returns the upload ID and bucket/key information for the initiated upload.
+    ///
+    /// - Parameters:
+    ///   - bucket: Target bucket name
+    ///   - key: Object key
+    ///   - uploadId: Unique multipart upload identifier
+    /// - Returns: XML string in InitiateMultipartUploadResult format
     static func initiateMultipartUploadResult(bucket: String, key: String, uploadId: String)
         -> String
     {
@@ -139,6 +163,15 @@ struct XML {
         }.content
     }
 
+    /// Generates XML for completed multipart upload result.
+    /// Returns the final object information after successful multipart upload completion.
+    ///
+    /// - Parameters:
+    ///   - bucket: Target bucket name
+    ///   - key: Object key
+    ///   - eTag: Combined ETag of all parts
+    ///   - location: Object location URL
+    /// - Returns: XML string in CompleteMultipartUploadResult format
     static func completeMultipartUploadResult(
         bucket: String, key: String, eTag: String, location: String
     ) -> String {
@@ -151,6 +184,11 @@ struct XML {
         }.content
     }
 
+    /// Parses XML containing multipart upload completion instructions.
+    /// Extracts part numbers and ETags from the CompleteMultipartUpload request body.
+    ///
+    /// - Parameter xml: XML string containing part information
+    /// - Returns: Array of PartInfo structs with part numbers and ETags
     static func parseCompleteMultipartUpload(xml: String) -> [PartInfo] {
         // Simple parsing using regex to avoid dependencies
         // Assuming format: <Part><PartNumber>1</PartNumber><ETag>"..."</ETag></Part>
@@ -195,9 +233,13 @@ struct XML {
             }
         }
 
-        return parts.sorted { $0.partNumber < $1.partNumber }
     }
 
+    /// Generates XML response for bulk delete operations
+    /// - Parameters:
+    ///   - deleted: Array of successfully deleted object keys
+    ///   - errors: Array of tuples containing error details (key, code, message) for failed deletions
+    /// - Returns: XML string formatted according to S3 API specification for delete results
     static func deleteResult(
         deleted: [String], errors: [(key: String, code: String, message: String)]
     ) -> String {
@@ -223,6 +265,10 @@ struct XML {
         }.content
     }
 
+    /// Parses XML input for bulk delete operations to extract object keys
+    /// - Parameter xml: XML string containing delete request with object keys
+    /// - Returns: Array of object keys to be deleted
+    /// - Note: Uses regex to extract keys from <Key> elements within <Object> elements
     // Helper to parse DeleteObjects request body
     static func parseDeleteObjects(xml: String) -> [String] {
         var keys: [String] = []
@@ -246,6 +292,11 @@ struct XML {
         }
         return keys
     }
+
+    /// Generates XML representation of an access control policy for S3 objects/buckets
+    /// - Parameter policy: The access control policy containing owner and grant information
+    /// - Returns: XML string formatted according to S3 API specification for ACL responses
+    /// - Note: Includes owner information and access control list with grantee details and permissions
     static func accessControlPolicy(policy: AccessControlPolicy) -> String {
         return XMLBuilder(
             root: "AccessControlPolicy",
@@ -297,6 +348,11 @@ struct XML {
             return xml
         }.content
     }
+
+    /// Generates XML representation of bucket versioning configuration
+    /// - Parameter config: Optional versioning configuration, nil means versioning is suspended
+    /// - Returns: XML string formatted according to S3 API specification for versioning responses
+    /// - Note: Includes status (Enabled/Suspended) and optional MFA delete setting
     static func versioningConfiguration(config: VersioningConfiguration?) -> String {
         return XMLBuilder(
             root: "VersioningConfiguration",
@@ -314,6 +370,18 @@ struct XML {
             return xml
         }.content
     }
+
+    /// Generates XML response for list object versions API calls
+    /// - Parameters:
+    ///   - bucket: Name of the bucket
+    ///   - result: ListVersionsResult containing versions and pagination info
+    ///   - prefix: Optional key prefix filter
+    ///   - delimiter: Optional delimiter for grouping keys
+    ///   - keyMarker: Optional marker for pagination by key
+    ///   - versionIdMarker: Optional marker for pagination by version ID
+    ///   - maxKeys: Optional maximum number of results to return
+    /// - Returns: XML string formatted according to S3 API specification for list versions responses
+    /// - Note: Includes version details, delete markers, and pagination information
     static func listVersionsResult(
         bucket: String, result: ListVersionsResult, prefix: String?, delimiter: String?,
         keyMarker: String?,
@@ -380,6 +448,10 @@ struct XML {
         }.content
     }
 
+    /// Generates XML representation of object/bucket tagging configuration
+    /// - Parameter tags: Array of S3Tag objects containing key-value pairs
+    /// - Returns: XML string formatted according to S3 API specification for tagging responses
+    /// - Note: Wraps tags in a TagSet element as required by S3 API
     static func taggingConfiguration(tags: [S3Tag]) -> String {
         return XMLBuilder(
             root: "Tagging",
@@ -395,6 +467,10 @@ struct XML {
         }.content
     }
 
+    /// Parses XML tagging configuration to extract key-value tag pairs
+    /// - Parameter xml: XML string containing tagging configuration
+    /// - Returns: Array of S3Tag objects with key-value pairs
+    /// - Note: Uses regex to extract tags from <Tag> elements containing <Key> and <Value> elements
     static func parseTagging(xml: String) -> [S3Tag] {
         var tags: [S3Tag] = []
         let tagPattern = "<Tag>(.*?)</Tag>"
@@ -441,6 +517,10 @@ struct XML {
 
     // MARK: - Lifecycle
 
+    /// Generates XML representation of lifecycle configuration for bucket management
+    /// - Parameter config: LifecycleConfiguration containing rules for object lifecycle management
+    /// - Returns: XML string formatted according to S3 API specification for lifecycle responses
+    /// - Note: Includes rules with filters, status, expiration settings, and non-current version handling
     static func lifecycleConfiguration(config: LifecycleConfiguration) -> String {
         return XMLBuilder(
             root: "LifecycleConfiguration",
@@ -500,6 +580,10 @@ struct XML {
         }.content
     }
 
+    /// Parses XML lifecycle configuration to extract lifecycle rules
+    /// - Parameter xml: XML string containing lifecycle configuration
+    /// - Returns: LifecycleConfiguration object with parsed rules
+    /// - Note: Uses regex to extract rules, filters, expiration settings, and non-current version configurations
     static func parseLifecycle(xml: String) -> LifecycleConfiguration {
         var rules: [LifecycleConfiguration.Rule] = []
 
@@ -658,6 +742,10 @@ struct XML {
 
     // MARK: - Notification
 
+    /// Generates XML representation of bucket notification configuration
+    /// - Parameter config: NotificationConfiguration containing topic, queue, and lambda configurations
+    /// - Returns: XML string formatted according to S3 API specification for notification responses
+    /// - Note: Includes topic configurations with events, filters, and destination ARNs
     static func notificationConfiguration(config: NotificationConfiguration) -> String {
         return XMLBuilder(root: "NotificationConfiguration") {
             var xml = ""
@@ -743,6 +831,10 @@ struct XML {
     }
     
     private static func notificationFilterXML(filter: NotificationFilter) -> String {
+        /// Generates XML representation of notification filter configuration
+        /// - Parameter filter: NotificationFilter containing key filter rules
+        /// - Returns: XML string for filter element with S3Key filter rules
+        /// - Note: Only processes key filters, returns empty string if no key filter present
         guard let keyFilter = filter.key else { return "" }
         return XMLBuilder.element("Filter") {
             XMLBuilder.element("S3Key") {
@@ -755,6 +847,10 @@ struct XML {
         }
     }
 
+    /// Parses XML notification configuration (placeholder implementation)
+    /// - Parameter xml: XML string containing notification configuration
+    /// - Returns: NotificationConfiguration object (currently returns empty configuration)
+    /// - Note: TODO: Implement full XML parsing for notification configuration
     static func parseNotification(xml: String) -> NotificationConfiguration {
         // TODO: Implement full XML parsing for notification configuration
         // For now, return empty configuration

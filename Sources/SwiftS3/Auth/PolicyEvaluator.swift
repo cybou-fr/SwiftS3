@@ -58,6 +58,13 @@ public struct PolicyEvaluator: Sendable {
         return true
     }
 
+    /// Checks if the policy principal matches the request principal.
+    /// Supports wildcard matching and specific ARN/user ID matching.
+    ///
+    /// - Parameters:
+    ///   - policyPrincipal: Principal from policy statement
+    ///   - requestPrincipal: Principal from access request
+    /// - Returns: True if principals match
     private func matchesPrincipal(_ policyPrincipal: PolicyPrincipal, _ requestPrincipal: String?)
         -> Bool
     {
@@ -75,6 +82,13 @@ public struct PolicyEvaluator: Sendable {
         }
     }
 
+    /// Checks if the policy action matches the request action.
+    /// Supports wildcard matching (e.g., "s3:*" matches all S3 actions).
+    ///
+    /// - Parameters:
+    ///   - policyAction: Action(s) from policy statement
+    ///   - requestAction: Action from access request
+    /// - Returns: True if actions match
     private func matchesAction(_ policyAction: SingleOrArray<String>, _ requestAction: String)
         -> Bool
     {
@@ -86,6 +100,13 @@ public struct PolicyEvaluator: Sendable {
         return false
     }
 
+    /// Checks if the policy resource matches the request resource.
+    /// Supports exact matching and simple wildcard patterns.
+    ///
+    /// - Parameters:
+    ///   - policyResource: Resource(s) from policy statement
+    ///   - requestResource: Resource from access request
+    /// - Returns: True if resources match
     private func matchesResource(_ policyResource: SingleOrArray<String>, _ requestResource: String)
         -> Bool
     {
