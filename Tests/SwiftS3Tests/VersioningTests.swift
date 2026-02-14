@@ -54,6 +54,7 @@ struct VersioningTests {
 
         try await app.test(.router, test)
 
+        try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
     }

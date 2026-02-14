@@ -12,17 +12,15 @@ import Testing
 @Suite("ACL Integration Tests")
 struct ACLIntegrationTests {
 
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    static let threadPool: NIOThreadPool = {
-        let tp = NIOThreadPool(numberOfThreads: 2)
-        tp.start()
-        return tp
-    }()
-
     func withApp(
         users: [(accessKey: String, secretKey: String)] = [],
         _ test: @escaping @Sendable (any TestClientProtocol, SQLMetadataStore) async throws -> Void
     ) async throws {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -35,8 +33,8 @@ struct ACLIntegrationTests {
 
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
         // Seed users
@@ -57,15 +55,29 @@ struct ACLIntegrationTests {
         let app = Application(
             router: router,
             configuration: .init(address: .hostname(server.hostname, port: server.port)),
-            eventLoopGroupProvider: .shared(Self.elg)
+            eventLoopGroupProvider: .shared(elg)
         )
 
-        try await app.test(.router) { client in
-            try await test(client, metadataStore)
+        do {
+            try await app.test(.router) { client in
+                try await test(client, metadataStore)
+            }
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
         }
 
+        // Cleanup
+        try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     // Helper to generate auth header using AWSAuthHelper (copied/adapted from PolicyIntegrationTests)

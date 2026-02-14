@@ -64,6 +64,7 @@ struct EndToEndIntegrationTests {
         try await app.test(.router, test)
 
         // Cleanup
+        try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
     }

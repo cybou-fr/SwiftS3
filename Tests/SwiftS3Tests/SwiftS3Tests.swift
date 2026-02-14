@@ -11,18 +11,15 @@ import Testing
 @Suite("SwiftS3 Tests")
 struct SwiftS3Tests {
 
-    // Shared resources
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    static let threadPool: NIOThreadPool = {
-        let tp = NIOThreadPool(numberOfThreads: 2)
-        tp.start()
-        return tp
-    }()
-
     // MARK: - Helper
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
         async throws
     {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -37,8 +34,8 @@ struct SwiftS3Tests {
         // Initialize SQL Metadata Store
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
@@ -54,11 +51,24 @@ struct SwiftS3Tests {
             configuration: .init(address: .hostname(server.hostname, port: server.port))
         )
 
-        try await app.test(.router, test)
+        do {
+            try await app.test(.router, test)
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
+        }
 
         // Cleanup
+        try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     // MARK: - Storage Tests
@@ -267,6 +277,11 @@ struct SwiftS3Tests {
 
     @Test("API: Configurable Authentication")
     func testAPIConfigurableAuth() async throws {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -276,8 +291,8 @@ struct SwiftS3Tests {
 
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
         let customAccess = "user123"
@@ -296,26 +311,40 @@ struct SwiftS3Tests {
             configuration: .init(address: .hostname("127.0.0.1", port: 0))
         )
 
-        try await app.test(.router) { client in
-            let helper = AWSAuthHelper(accessKey: customAccess, secretKey: customSecret)
-            let url = URL(string: "http://localhost:8080/")!
-            let headers = try helper.signRequest(method: .get, url: url)
+        do {
+            try await app.test(.router) { client in
+                let helper = AWSAuthHelper(accessKey: customAccess, secretKey: customSecret)
+                let url = URL(string: "http://localhost:8080/")!
+                let headers = try helper.signRequest(method: .get, url: url)
 
-            try await client.execute(uri: "/", method: .get, headers: headers) { response in
-                #expect(response.status == .ok)
+                try await client.execute(uri: "/", method: .get, headers: headers) { response in
+                    #expect(response.status == .ok)
+                }
+
+                // Test with WRONG credentials
+                let wrongHelper = AWSAuthHelper(accessKey: "wrong", secretKey: "credentials")
+                let wrongHeaders = try wrongHelper.signRequest(method: .get, url: url)
+
+                try await client.execute(uri: "/", method: .get, headers: wrongHeaders) { response in
+                    #expect(response.status == .forbidden)
+                }
             }
-
-            // Test with WRONG credentials
-            let wrongHelper = AWSAuthHelper(accessKey: "wrong", secretKey: "credentials")
-            let wrongHeaders = try wrongHelper.signRequest(method: .get, url: url)
-
-            try await client.execute(uri: "/", method: .get, headers: wrongHeaders) { response in
-                #expect(response.status == .forbidden)
-            }
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
         }
 
-        try await metadataStore.shutdown()
+        // Cleanup
+        try? await storage.shutdown()
+        try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     @Test("API: List Objects V2")

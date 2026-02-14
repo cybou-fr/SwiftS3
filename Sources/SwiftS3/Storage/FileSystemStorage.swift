@@ -1,3 +1,4 @@
+import AsyncHTTPClient
 import Crypto
 import CryptoKit
 import Foundation
@@ -88,11 +89,13 @@ actor FileSystemStorage: StorageBackend {
     let fileSystem = FileSystem.shared
     let metadataStore: MetadataStore
     let logger = Logger(label: "SwiftS3.FileSystemStorage")
+    let httpClient: HTTPClient
 
     /// Initializes a new file system storage instance.
     init(rootPath: String, metadataStore: MetadataStore? = nil) {
         self.rootPath = FilePath(rootPath)
         self.metadataStore = metadataStore ?? FileSystemMetadataStore(rootPath: rootPath)
+        self.httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
     }
 
     private func bucketPath(_ name: String) -> FilePath {
@@ -1319,36 +1322,37 @@ actor FileSystemStorage: StorageBackend {
             return // No notifications configured
         }
 
-        // Create event record
-        let eventRecord = S3EventRecord(
-            eventName: event,
-            userIdentity: UserIdentity(principalId: userIdentity ?? "SwiftS3"),
-            requestParameters: RequestParameters(sourceIPAddress: sourceIPAddress ?? "127.0.0.1"),
-            responseElements: ResponseElements(xAmzRequestId: UUID().uuidString, xAmzId2: UUID().uuidString),
-            s3: S3Entity(
-                configurationId: "default", // TODO: Use actual configuration ID
-                bucket: S3Bucket(
-                    name: bucket,
-                    ownerIdentity: UserIdentity(principalId: userIdentity ?? "SwiftS3"),
-                    arn: "arn:aws:s3:::\(bucket)"
-                ),
-                object: S3Object(
-                    key: key ?? "",
-                    size: metadata?.size,
-                    eTag: metadata?.eTag,
-                    versionId: metadata?.versionId,
-                    sequencer: UUID().uuidString
+        // Helper function to create event record for a specific configuration
+        func createEventRecord(configurationId: String) -> S3EventRecord {
+            S3EventRecord(
+                eventName: event,
+                userIdentity: UserIdentity(principalId: userIdentity ?? "SwiftS3"),
+                requestParameters: RequestParameters(sourceIPAddress: sourceIPAddress ?? "127.0.0.1"),
+                responseElements: ResponseElements(xAmzRequestId: UUID().uuidString, xAmzId2: UUID().uuidString),
+                s3: S3Entity(
+                    configurationId: configurationId,
+                    bucket: S3Bucket(
+                        name: bucket,
+                        ownerIdentity: UserIdentity(principalId: userIdentity ?? "SwiftS3"),
+                        arn: "arn:aws:s3:::\(bucket)"
+                    ),
+                    object: S3Object(
+                        key: key ?? "",
+                        size: metadata?.size,
+                        eTag: metadata?.eTag,
+                        versionId: metadata?.versionId,
+                        sequencer: UUID().uuidString
+                    )
                 )
             )
-        )
-
-        // Publish to configured destinations
-        let eventData = try JSONEncoder().encode(eventRecord)
+        }
 
         // Publish to topics
         if let topicConfigs = notificationConfig.topicConfigurations {
             for topicConfig in topicConfigs {
                 if topicConfig.events.contains(event) || topicConfig.events.contains(.objectCreated) || topicConfig.events.contains(.objectRemoved) {
+                    let eventRecord = createEventRecord(configurationId: topicConfig.id ?? "default-topic")
+                    let eventData = try JSONEncoder().encode(eventRecord)
                     Task {
                         do {
                             try await postToTopic(topicArn: topicConfig.topicArn, eventData: eventData)
@@ -1364,6 +1368,8 @@ actor FileSystemStorage: StorageBackend {
         if let queueConfigs = notificationConfig.queueConfigurations {
             for queueConfig in queueConfigs {
                 if queueConfig.events.contains(event) || queueConfig.events.contains(.objectCreated) || queueConfig.events.contains(.objectRemoved) {
+                    let eventRecord = createEventRecord(configurationId: queueConfig.id ?? "default-queue")
+                    let eventData = try JSONEncoder().encode(eventRecord)
                     Task {
                         do {
                             try await postToQueue(queueArn: queueConfig.queueArn, eventData: eventData)
@@ -1379,18 +1385,14 @@ actor FileSystemStorage: StorageBackend {
         if let lambdaConfigs = notificationConfig.lambdaConfigurations {
             for lambdaConfig in lambdaConfigs {
                 if lambdaConfig.events.contains(event) || lambdaConfig.events.contains(.objectCreated) || lambdaConfig.events.contains(.objectRemoved) {
-                    // Attempt Lambda invocation (basic implementation)
-                    do {
-                        logger.info("Attempting Lambda invocation for \(lambdaConfig.lambdaFunctionArn)")
-                        // TODO: Implement actual HTTP call to Lambda endpoint
-                        // This would require:
-                        // 1. HTTP client dependency (async-http-client)
-                        // 2. AWS credentials and authentication
-                        // 3. Proper Lambda API payload formatting
-                        // For now, log the invocation attempt
-                        logger.info("Lambda invocation completed for \(lambdaConfig.lambdaFunctionArn) (simulated)")
-                    } catch {
-                        logger.error("Lambda invocation failed for \(lambdaConfig.lambdaFunctionArn): \(error)")
+                    let eventRecord = createEventRecord(configurationId: lambdaConfig.id ?? "default-lambda")
+                    let eventData = try JSONEncoder().encode(eventRecord)
+                    Task {
+                        do {
+                            try await self.invokeLambda(functionArn: lambdaConfig.lambdaFunctionArn, eventData: eventData)
+                        } catch {
+                            logger.error("Lambda invocation failed for \(lambdaConfig.lambdaFunctionArn): \(error)")
+                        }
                     }
                 }
             }
@@ -1400,6 +1402,8 @@ actor FileSystemStorage: StorageBackend {
         if let webhookConfigs = notificationConfig.webhookConfigurations {
             for webhookConfig in webhookConfigs {
                 if webhookConfig.events.contains(event) || webhookConfig.events.contains(.objectCreated) || webhookConfig.events.contains(.objectRemoved) {
+                    let eventRecord = createEventRecord(configurationId: webhookConfig.id ?? "default-webhook")
+                    let eventData = try JSONEncoder().encode(eventRecord)
                     Task {
                         do {
                             try await postWebhook(url: webhookConfig.url, eventData: eventData)
@@ -1521,7 +1525,57 @@ actor FileSystemStorage: StorageBackend {
         try await metadataStore.deleteBatchJob(jobId: jobId)
     }
 
+    /// Shuts down the HTTP client
+    func shutdown() async throws {
+        try await httpClient.shutdown()
+    }
+
     func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {
         try await metadataStore.executeBatchOperation(jobId: jobId, bucket: bucket, key: key)
+    }
+
+    /// Invokes an AWS Lambda function with the provided event data
+    /// - Parameters:
+    ///   - functionArn: The ARN of the Lambda function to invoke
+    ///   - eventData: The JSON data to send as the Lambda payload
+    private func invokeLambda(functionArn: String, eventData: Data) async throws {
+        // For now, this is a simplified implementation
+        // In a real implementation, you would:
+        // 1. Parse the Lambda ARN to extract region and function name
+        // 2. Use AWS credentials to sign the request
+        // 3. Make an HTTP POST to the Lambda invoke endpoint
+
+        // Extract function name from ARN (simplified)
+        let arnComponents = functionArn.split(separator: ":")
+        guard arnComponents.count >= 6, arnComponents[2] == "lambda" else {
+            throw S3Error(code: "InvalidArgument", message: "Invalid Lambda function ARN: \(functionArn)", statusCode: .badRequest)
+        }
+        let region = String(arnComponents[3])
+        let functionName = String(arnComponents[5])
+
+        // Construct Lambda invoke URL
+        let url = "https://lambda.\(region).amazonaws.com/2020-06-30/functions/\(functionName)/invocations"
+
+        // Create HTTP request
+        var request = HTTPClientRequest(url: url)
+        request.method = .POST
+        request.headers.add(name: "Content-Type", value: "application/json")
+        request.headers.add(name: "X-Amz-Invocation-Type", value: "Event") // Asynchronous invocation
+        request.body = .bytes(ByteBuffer(data: eventData))
+
+        // Note: In a real implementation, you would add AWS signature headers here
+        // For now, this will fail without proper authentication
+
+        let response = try await httpClient.execute(request, timeout: .seconds(30))
+
+        // Check response status
+        guard response.status == .accepted || response.status == .ok else {
+            let body = try await response.body.collect(upTo: 1024 * 1024) // 1MB limit
+            let errorMessage = String(buffer: body)
+            logger.error("Lambda invocation failed with status \(response.status): \(errorMessage)")
+            throw S3Error(code: "InternalError", message: "Lambda invocation failed: \(response.status)", statusCode: .internalServerError)
+        }
+
+        logger.info("Lambda function \(functionArn) invoked successfully")
     }
 }

@@ -181,8 +181,31 @@ func withApp(
         try await test(client, metadataStore)
     }
 
+    try? await storage.shutdown()
     try? await metadataStore.shutdown()
     try? await threadPool.shutdownGracefully()
     try? await elg.shutdownGracefully()
     try? FileManager.default.removeItem(atPath: storagePath)
+}
+
+/// Global test helper to set up a SwiftS3 application with mock storage for fast unit testing
+func withMockApp(
+    _ test: @escaping @Sendable (any TestClientProtocol, MockStorage) async throws -> Void
+) async throws {
+    let mockStorage = MockStorage()
+    let controller = S3Controller(storage: mockStorage)
+
+    let router = Router(context: S3RequestContext.self)
+    router.middlewares.add(S3ErrorMiddleware())
+    router.middlewares.add(MockAuthenticatorMiddleware())
+    controller.addRoutes(to: router)
+
+    let app = Application(
+        router: router,
+        configuration: .init(address: .hostname("127.0.0.1", port: 0))
+    )
+
+    try await app.test(.router) { client in
+        try await test(client, mockStorage)
+    }
 }

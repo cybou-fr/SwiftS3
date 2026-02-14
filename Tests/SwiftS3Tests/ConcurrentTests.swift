@@ -10,16 +10,14 @@ import Testing
 @Suite("Concurrent Testing")
 struct ConcurrentTests {
 
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
-    static let threadPool: NIOThreadPool = {
-        let tp = NIOThreadPool(numberOfThreads: 2)
-        tp.start()
-        return tp
-    }()
-
     func withApp(_ test: @escaping @Sendable (any TestClientProtocol) async throws -> Void)
         async throws
     {
+        // Create per-test event loop group and thread pool
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
+        let threadPool = NIOThreadPool(numberOfThreads: 2)
+        threadPool.start()
+
         let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString
         ).path
@@ -32,8 +30,8 @@ struct ConcurrentTests {
 
         let metadataStore = try await SQLMetadataStore.create(
             path: storagePath + "/metadata.sqlite",
-            on: Self.elg,
-            threadPool: Self.threadPool
+            on: elg,
+            threadPool: threadPool
         )
 
         let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
@@ -49,11 +47,24 @@ struct ConcurrentTests {
             configuration: .init(address: .hostname(server.hostname, port: server.port))
         )
 
-        try await app.test(.router, test)
+        do {
+            try await app.test(.router, test)
+        } catch {
+            // Cleanup on error
+            try? await storage.shutdown()
+            try? await metadataStore.shutdown()
+            try? FileManager.default.removeItem(atPath: storagePath)
+            try? await threadPool.shutdownGracefully()
+            try? await elg.shutdownGracefully()
+            throw error
+        }
 
         // Cleanup
+        try? await storage.shutdown()
         try? await metadataStore.shutdown()
         try? FileManager.default.removeItem(atPath: storagePath)
+        try? await threadPool.shutdownGracefully()
+        try? await elg.shutdownGracefully()
     }
 
     func sign(
@@ -277,7 +288,6 @@ struct ConcurrentTests {
                         let expectedContent = part1 + part2
 
                         // Initiate multipart upload
-                        var uploadId = ""
                         try await client.execute(
                             uri: "/\(bucket)/\(key)?uploads",
                             method: .post,
@@ -285,9 +295,7 @@ struct ConcurrentTests {
                         ) { response in
                             #expect(response.status == .ok)
                             // Parse upload ID from response XML
-                            let bodyString = String(buffer: response.body)
                             // In a real implementation, we'd parse the XML to get the upload ID
-                            uploadId = "mock-upload-id-\(i)"
                         }
 
                         // Upload parts (simplified - in real S3, parts are uploaded separately)

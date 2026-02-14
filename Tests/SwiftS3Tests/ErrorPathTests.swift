@@ -374,4 +374,39 @@ struct ErrorPathTests {
             }
         }
     }
+
+    @Test("Malformed XML in Requests")
+    func testMalformedXMLRequests() async throws {
+        try await withMockApp { client, _ in
+            // Test malformed XML in bucket policy
+            let malformedPolicy = "<BucketPolicy><Statement><Principal></Principal></Statement></BucketPolicy>"
+
+            try await client.execute(
+                uri: "/test-bucket?policy",
+                method: .put,
+                headers: [
+                    .contentType: "application/json",
+                    .authorization: "AWS4-HMAC-SHA256 Credential=admin/20240101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=test"
+                ],
+                body: ByteBuffer(string: malformedPolicy)
+            ) { response in
+                #expect(response.status == .badRequest)
+            }
+        }
+    }
+
+    @Test("Invalid Bucket Names")
+    func testInvalidBucketNames() async throws {
+        try await withMockApp { client, _ in
+            // Test bucket name with invalid characters
+            try await client.execute(uri: "/invalid_bucket_name!", method: .put) { response in
+                #expect(response.status == .badRequest)
+            }
+
+            // Test empty bucket name
+            try await client.execute(uri: "/", method: .put) { response in
+                #expect(response.status == .badRequest)
+            }
+        }
+    }
 }
