@@ -25,7 +25,7 @@ struct ObjectExpirationTests {
                 on: elg,
                 threadPool: threadPool
             )
-            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore, testMode: true)
 
             let bucket = "test-bucket"
             try await storage.createBucket(name: bucket, owner: "admin")
@@ -93,7 +93,7 @@ struct ObjectExpirationTests {
                 on: elg,
                 threadPool: threadPool
             )
-            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore, testMode: true)
 
             let bucket = "prefix-bucket"
             try await storage.createBucket(name: bucket, owner: "admin")
@@ -172,7 +172,7 @@ struct ObjectExpirationTests {
                 on: elg,
                 threadPool: threadPool
             )
-            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+            let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore, testMode: true)
 
             let bucket = "versioned-bucket"
             try await storage.createBucket(name: bucket, owner: "admin")

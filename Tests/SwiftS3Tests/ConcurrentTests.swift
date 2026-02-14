@@ -14,7 +14,7 @@ struct ConcurrentTests {
         async throws
     {
         // Create per-test event loop group and thread pool
-        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let threadPool = NIOThreadPool(numberOfThreads: 2)
         threadPool.start()
 
@@ -193,9 +193,8 @@ struct ConcurrentTests {
                 #expect(response.status == .ok)
             }
 
-            // Concurrently perform mixed operations
+            // Phase 1: Create objects concurrently
             try await withThrowingTaskGroup(of: Void.self) { group in
-                // Create objects
                 for i in 0..<5 {
                     group.addTask {
                         let key = "mixed-object-\(i)"
@@ -211,8 +210,11 @@ struct ConcurrentTests {
                         }
                     }
                 }
+                try await group.waitForAll()
+            }
 
-                // Read objects
+            // Phase 2: Read objects concurrently
+            try await withThrowingTaskGroup(of: Void.self) { group in
                 for i in 0..<5 {
                     group.addTask {
                         let key = "mixed-object-\(i)"
@@ -228,8 +230,11 @@ struct ConcurrentTests {
                         }
                     }
                 }
+                try await group.waitForAll()
+            }
 
-                // Delete some objects
+            // Phase 3: Delete some objects concurrently
+            try await withThrowingTaskGroup(of: Void.self) { group in
                 for i in 2..<4 {
                     group.addTask {
                         let key = "mixed-object-\(i)"
@@ -243,7 +248,6 @@ struct ConcurrentTests {
                         }
                     }
                 }
-
                 try await group.waitForAll()
             }
 

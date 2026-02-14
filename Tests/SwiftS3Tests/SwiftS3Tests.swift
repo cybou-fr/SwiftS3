@@ -197,6 +197,9 @@ struct SwiftS3Tests {
         try await storage.deleteBucket(name: "test-bucket")
         let bucketsAfter = try await storage.listBuckets()
         #expect(bucketsAfter.isEmpty)
+
+        // Cleanup
+        try? await storage.shutdown()
     }
 
     @Test("Storage: Put and Get Object")
@@ -204,10 +207,7 @@ struct SwiftS3Tests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
         let storage = FileSystemStorage(rootPath: root, testMode: true)
-        defer { 
-            try? await storage.shutdown()
-            try? FileManager.default.removeItem(atPath: root) 
-        }
+        defer { try? FileManager.default.removeItem(atPath: root) }
 
         try await storage.createBucket(name: "test-bucket", owner: "test-owner")
 
@@ -240,6 +240,9 @@ struct SwiftS3Tests {
             }
         }
         #expect(receivedData == data)
+
+        // Cleanup
+        try? await storage.shutdown()
     }
 
     @Test("Storage: S3 Select")
@@ -247,10 +250,7 @@ struct SwiftS3Tests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
         let storage = FileSystemStorage(rootPath: root, testMode: true)
-        defer { 
-            try? await storage.shutdown()
-            try? FileManager.default.removeItem(atPath: root) 
-        }
+        defer { try? FileManager.default.removeItem(atPath: root) }
 
         try await storage.createBucket(name: "test-bucket", owner: "test-owner")
 
@@ -272,6 +272,9 @@ struct SwiftS3Tests {
         let (metadata, _) = try await storage.getObject(
             bucket: "test-bucket", key: "data.csv", versionId: nil, range: nil)
         #expect(metadata.size == Int64(csvData.count))
+
+        // Cleanup
+        try? await storage.shutdown()
     }
 
     // MARK: - API Tests
@@ -647,10 +650,7 @@ struct SwiftS3Tests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
         let storage = FileSystemStorage(rootPath: root, testMode: true)
-        defer { 
-            try? await storage.shutdown()
-            try? FileManager.default.removeItem(atPath: root) 
-        }
+        defer { try? FileManager.default.removeItem(atPath: root) }
 
         try await storage.createBucket(name: "meta-bucket", owner: "test-owner")
 
@@ -672,6 +672,9 @@ struct SwiftS3Tests {
             bucket: "meta-bucket", key: "obj", versionId: nil)
         #expect(headMeta.contentType == "application/json")
         #expect(headMeta.customMetadata["x-amz-meta-custom"] == "value123")
+
+        // Cleanup
+        try? await storage.shutdown()
     }
 
     @Test("Storage: Range Requests")
@@ -714,12 +717,15 @@ struct SwiftS3Tests {
             }
         }
         #expect(received2 == "56789")
+
+        // Cleanup
+        try? await storage.shutdown()
     }
     @Test("Storage: Multipart Upload Flow")
     func testMultipartUploadFlow() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
-        let storage = FileSystemStorage(rootPath: root)
+        let storage = FileSystemStorage(rootPath: root, testMode: true)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
         try await storage.createBucket(name: "multi-bucket", owner: "test-owner")
@@ -852,7 +858,7 @@ struct SwiftS3Tests {
     func testChecksumVerificationPasses() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             .path
-        let storage = FileSystemStorage(rootPath: root)
+        let storage = FileSystemStorage(rootPath: root, testMode: true)
         defer { try? FileManager.default.removeItem(atPath: root) }
 
         try await storage.createBucket(name: "checksum-bucket", owner: "test-owner")
