@@ -721,6 +721,11 @@ protocol StorageBackend: Sendable {
         bucket: String, key: String, uploadId: String, partNumber: Int, data: consuming Stream,
         size: Int64?
     ) async throws -> String where Stream.Element == ByteBuffer
+    /// Uploads a part by copying from an existing object.
+    func uploadPartCopy(
+        bucket: String, key: String, uploadId: String, partNumber: Int, copySource: String,
+        range: ValidatedRange?
+    ) async throws -> String
     /// Completes a multipart upload by assembling all parts.
     func completeMultipartUpload(bucket: String, key: String, uploadId: String, parts: [PartInfo])
         async throws -> String

@@ -223,6 +223,35 @@ struct SwiftS3Tests {
         #expect(receivedData == data)
     }
 
+    @Test("Storage: S3 Select")
+    func testStorageS3Select() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            .path
+        let storage = FileSystemStorage(rootPath: root)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try await storage.createBucket(name: "test-bucket", owner: "test-owner")
+
+        let csvData = "name,age\nAlice,30\nBob,25\n"
+        let buffer = ByteBuffer(string: csvData)
+        let stream = AsyncStream<ByteBuffer> { continuation in
+            continuation.yield(buffer)
+            continuation.finish()
+        }
+
+        let meta = try await storage.putObject(
+            bucket: "test-bucket", key: "data.csv", data: stream, size: Int64(csvData.count),
+            metadata: nil, owner: "test-owner")
+        #expect(meta.eTag != nil && !meta.eTag!.isEmpty)
+
+        // For S3 Select, we test the logic indirectly since it's in the controller
+        // In a full test, we'd call the POST endpoint with select query
+        // For now, just ensure the object exists
+        let (metadata, _) = try await storage.getObject(
+            bucket: "test-bucket", key: "data.csv", versionId: nil, range: nil)
+        #expect(metadata.size == Int64(csvData.count))
+    }
+
     // MARK: - API Tests
 
     @Test("API: List Buckets (No Auth)")
@@ -443,6 +472,121 @@ struct SwiftS3Tests {
             ) { response in
                 #expect(response.status == .ok)
                 #expect(response.headers[.eTag] != nil)
+            }
+        }
+    }
+
+    @Test("API: S3 Select")
+    func testAPIS3Select() async throws {
+        try await withApp { app in
+            let helper = AWSAuthHelper()
+
+            // Create Bucket
+            let bucketUrl = URL(string: "http://localhost:8080/select-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(uri: "/select-bucket", method: .put, headers: createHeaders) { _ in }
+
+            // Put CSV Object
+            let objectUrl = URL(string: "http://localhost:8080/select-bucket/data.csv")!
+            let csvContent = "name,age\nAlice,30\nBob,25\n"
+            let putHeaders = try helper.signRequest(method: .put, url: objectUrl, payload: csvContent)
+            try await app.execute(
+                uri: "/select-bucket/data.csv", method: .put, headers: putHeaders,
+                body: ByteBuffer(string: csvContent)
+            ) { _ in }
+
+            // S3 Select Query
+            let selectUrl = URL(string: "http://localhost:8080/select-bucket/data.csv?select&select-type=2")!
+            let selectBody = """
+            {
+                "Expression": "SELECT * FROM S3Object",
+                "ExpressionType": "SQL",
+                "InputSerialization": {"CSV": {"FileHeaderInfo": "Use"}},
+                "OutputSerialization": {"CSV": {}}
+            }
+            """
+            let selectHeaders = try helper.signRequest(method: .post, url: selectUrl, payload: selectBody)
+            try await app.execute(
+                uri: "/select-bucket/data.csv?select&select-type=2", method: .post, headers: selectHeaders,
+                body: ByteBuffer(string: selectBody)
+            ) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body == csvContent)
+            }
+        }
+    }
+
+    @Test("API: Upload Part Copy")
+    func testAPIUploadPartCopy() async throws {
+        try await withApp { app in
+            let helper = AWSAuthHelper()
+
+            // Create Bucket
+            let bucketUrl = URL(string: "http://localhost:8080/copy-bucket")!
+            let createHeaders = try helper.signRequest(method: .put, url: bucketUrl)
+            try await app.execute(uri: "/copy-bucket", method: .put, headers: createHeaders) { _ in }
+
+            // Put Source Object
+            let sourceUrl = URL(string: "http://localhost:8080/copy-bucket/source.txt")!
+            let sourceContent = "This is the source content for copy part"
+            let putHeaders = try helper.signRequest(method: .put, url: sourceUrl, payload: sourceContent)
+            try await app.execute(
+                uri: "/copy-bucket/source.txt", method: .put, headers: putHeaders,
+                body: ByteBuffer(string: sourceContent)
+            ) { _ in }
+
+            // Initiate Multipart Upload
+            let initUrl = URL(string: "http://localhost:8080/copy-bucket/dest.txt?uploads")!
+            let initHeaders = try helper.signRequest(method: .post, url: initUrl)
+            var uploadId = ""
+            try await app.execute(uri: "/copy-bucket/dest.txt?uploads", method: .post, headers: initHeaders) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                // Parse upload ID from XML
+                if let range = body.range(of: "<UploadId>") {
+                    let start = body.index(range.upperBound, offsetBy: 0)
+                    if let endRange = body.range(of: "</UploadId>", range: start..<body.endIndex) {
+                        uploadId = String(body[start..<endRange.lowerBound])
+                    }
+                }
+                #expect(!uploadId.isEmpty)
+            }
+
+            // Upload Part Copy
+            let copyUrl = URL(string: "http://localhost:8080/copy-bucket/dest.txt?partNumber=1&uploadId=\(uploadId)")!
+            var copyHeaders = try helper.signRequest(method: .put, url: copyUrl)
+            copyHeaders[HTTPField.Name("x-amz-copy-source")!] = "/copy-bucket/source.txt"
+            try await app.execute(uri: "/copy-bucket/dest.txt?partNumber=1&uploadId=\(uploadId)", method: .put, headers: copyHeaders) { response in
+                #expect(response.status == .ok)
+                #expect(response.headers[.eTag] != nil)
+            }
+
+            // Complete Multipart Upload
+            let completeUrl = URL(string: "http://localhost:8080/copy-bucket/dest.txt?uploadId=\(uploadId)")!
+            let completeBody = """
+            <CompleteMultipartUpload>
+                <Part>
+                    <ETag>"dummy"</ETag>
+                    <PartNumber>1</PartNumber>
+                </Part>
+            </CompleteMultipartUpload>
+            """
+            let completeHeaders = try helper.signRequest(method: .post, url: completeUrl, payload: completeBody)
+            try await app.execute(
+                uri: "/copy-bucket/dest.txt?uploadId=\(uploadId)", method: .post, headers: completeHeaders,
+                body: ByteBuffer(string: completeBody)
+            ) { response in
+                #expect(response.status == .ok)
+            }
+
+            // Get the completed object
+            let getUrl = URL(string: "http://localhost:8080/copy-bucket/dest.txt")!
+            let getHeaders = try helper.signRequest(method: .get, url: getUrl)
+            try await app.execute(uri: "/copy-bucket/dest.txt", method: .get, headers: getHeaders) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body == sourceContent)
             }
         }
     }

@@ -658,6 +658,68 @@ actor FileSystemStorage: StorageBackend {
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Uploads a part by copying data from an existing object.
+    /// Supports range-based copying for partial object duplication.
+    ///
+    /// - Parameters:
+    ///   - bucket: Bucket name
+    ///   - key: Object key (for validation)
+    ///   - uploadId: Multipart upload ID
+    ///   - partNumber: Sequential part number (1-based)
+    ///   - copySource: Source object path (bucket/key)
+    ///   - range: Optional byte range to copy
+    /// - Returns: SHA256 ETag of the copied part
+    /// - Throws: S3Error if upload doesn't exist or source object not found
+    func uploadPartCopy(
+        bucket: String, key: String, uploadId: String, partNumber: Int, copySource: String,
+        range: ValidatedRange?
+    ) async throws -> String {
+        let uPath = uploadPath(bucket: bucket, uploadId: uploadId)
+        if !(try await fileSystem.exists(at: uPath)) {
+            throw S3Error.noSuchUpload
+        }
+
+        // Parse copy source
+        var source = copySource
+        if source.hasPrefix("/") {
+            source.removeFirst()
+        }
+        let components = source.split(separator: "/", maxSplits: 1)
+        guard components.count == 2 else {
+            throw S3Error.invalidRequest
+        }
+        let srcBucket = String(components[0])
+        let srcKey = String(components[1])
+
+        // Get source object
+        let (_, bodyStream) = try await getObject(bucket: srcBucket, key: srcKey, versionId: nil, range: range)
+        guard let body = bodyStream else {
+            throw S3Error.invalidRequest
+        }
+
+        let partPath = uPath.appending("\(partNumber)")
+
+        var digest = SHA256()
+        let handle = try await fileSystem.openFile(
+            forWritingAt: partPath, options: .newFile(replaceExisting: true))
+
+        do {
+            var offset: Int64 = 0
+            for try await var buffer in body {
+                let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
+                digest.update(data: Data(bytes))
+                try await handle.write(contentsOf: bytes, toAbsoluteOffset: offset)
+                offset += Int64(bytes.count)
+            }
+            try await handle.close()
+        } catch {
+            try? await handle.close()
+            throw error
+        }
+
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Completes a multipart upload by assembling all parts into final object.
     /// Concatenates all uploaded parts in order and creates the final object.
     /// Cleans up temporary upload files after successful completion.

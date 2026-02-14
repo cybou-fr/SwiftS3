@@ -415,7 +415,7 @@ struct S3Controller {
         
         let policy: BucketPolicy
         do {
-            policy = try JSONDecoder().decode(BucketPolicy.self, from: buffer)
+            policy = try JSONDecoder().decode(BucketPolicy.self, from: Data(buffer.readableBytesView))
         } catch {
             throw S3Error.malformedPolicy
         }
@@ -639,11 +639,35 @@ struct S3Controller {
         if let partNumberStr = query["partNumber"], let uploadId = query["uploadId"],
             let partNumber = Int(partNumberStr)
         {
-            let contentLength = request.headers[.contentLength].flatMap { Int64($0) }
-            let etag = try await storage.uploadPart(
-                bucket: bucket, key: key, uploadId: uploadId, partNumber: partNumber,
-                data: request.body, size: contentLength)
-            return Response(status: .ok, headers: [.eTag: etag])
+            // Check for copy source
+            if let copySource = request.headers[HTTPField.Name("x-amz-copy-source")!] {
+                var source = copySource
+                if source.hasPrefix("/") {
+                    source.removeFirst()
+                }
+                
+                // Parse range if present
+                var range: ValidatedRange? = nil
+                if let copyRange = request.headers[HTTPField.Name("x-amz-copy-source-range")!] {
+                    // Parse bytes=start-end
+                    let rangeStr = copyRange.replacingOccurrences(of: "bytes=", with: "")
+                    let parts = rangeStr.split(separator: "-")
+                    if parts.count == 2, let start = Int64(parts[0]), let end = Int64(parts[1]) {
+                        range = ValidatedRange(start: start, end: end)
+                    }
+                }
+                
+                let etag = try await storage.uploadPartCopy(
+                    bucket: bucket, key: key, uploadId: uploadId, partNumber: partNumber,
+                    copySource: source, range: range)
+                return Response(status: .ok, headers: [.eTag: etag])
+            } else {
+                let contentLength = request.headers[.contentLength].flatMap { Int64($0) }
+                let etag = try await storage.uploadPart(
+                    bucket: bucket, key: key, uploadId: uploadId, partNumber: partNumber,
+                    data: request.body, size: contentLength)
+                return Response(status: .ok, headers: [.eTag: etag])
+            }
         }
 
         // Check for Copy Source
@@ -825,6 +849,91 @@ struct S3Controller {
             return Response(
                 status: .ok, headers: [.contentType: "application/xml"],
                 body: .init(byteBuffer: ByteBuffer(string: resultXml)))
+        } else if query.keys.contains("select") {
+            // S3 Select
+            try await checkAccess(
+                bucket: bucket, key: key, action: "s3:GetObject", request: request, context: context
+            )
+
+            let buffer = try await request.body.collect(upTo: 1024 * 1024)  // 1MB limit
+            
+            // Parse select request
+            struct SelectRequest: Codable {
+                let Expression: String
+                let ExpressionType: String
+                let InputSerialization: InputSerialization
+                let OutputSerialization: OutputSerialization
+            }
+            
+            struct InputSerialization: Codable {
+                let CSV: CSVInput?
+                let JSON: JSONInput?
+            }
+            
+            struct CSVInput: Codable {
+                let FileHeaderInfo: String?
+            }
+            
+            struct JSONInput: Codable {
+                let `Type`: String?
+            }
+            
+            struct OutputSerialization: Codable {
+                let CSV: CSVOutput?
+                let JSON: JSONOutput?
+            }
+            
+            struct CSVOutput: Codable {}
+            
+            struct JSONOutput: Codable {
+                let RecordDelimiter: String?
+            }
+            
+            let selectReq: SelectRequest
+            do {
+                selectReq = try JSONDecoder().decode(SelectRequest.self, from: Data(buffer.readableBytesView))
+            } catch {
+                throw S3Error.malformedPolicy  // reuse error
+            }
+            
+            // Get object data
+            let (_, bodyStream) = try await storage.getObject(bucket: bucket, key: key, versionId: nil, range: nil)
+            var data = Data()
+            if let body = bodyStream {
+                for try await buffer in body {
+                    data.append(contentsOf: buffer.readableBytesView)
+                }
+            }
+            let content = String(data: data, encoding: .utf8) ?? ""
+            
+            // Simple implementation: only support SELECT * FROM S3Object for CSV
+            guard selectReq.Expression.uppercased() == "SELECT * FROM S3OBJECT" else {
+                throw S3Error.invalidArgument
+            }
+            
+            var result: String
+            if selectReq.InputSerialization.CSV != nil {
+                // For CSV, just return the content as is
+                result = content
+            } else {
+                throw S3Error.invalidArgument
+            }
+            
+            // Output serialization
+            if selectReq.OutputSerialization.CSV != nil {
+                // Already CSV
+            } else if let json = selectReq.OutputSerialization.JSON {
+                // Convert to JSON lines
+                let lines = result.split(separator: "\n")
+                let delimiter = json.RecordDelimiter ?? "\n"
+                result = lines.map { "{\"record\": \"\($0)\"}" }.joined(separator: delimiter)
+            }
+            
+            return Response(
+                status: .ok,
+                headers: [.contentType: "application/octet-stream"],
+                body: .init(byteBuffer: ByteBuffer(string: result))
+            )
         }
 
         return Response(status: .badRequest)

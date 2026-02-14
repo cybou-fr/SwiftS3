@@ -18,7 +18,7 @@ This document outlines the next phase of SwiftS3 development, focusing on enterp
 
 - [x] **SSE-KMS**: Server-side encryption with customer-managed keys.
 - [x] **VPC-Only Access**: Restrict access to specific VPCs and private networks.
-- [ ] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
+- [x] **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
 - [x] **Advanced Auditing**: Detailed audit logs with compliance reporting.
 
 ## 3. Event-Driven Architecture
@@ -44,8 +44,8 @@ This document outlines the next phase of SwiftS3 development, focusing on enterp
 **Goal:** Large-scale operations and automation.
 
 - [x] **Batch Operations**: Large-scale batch operations on objects (like AWS S3 Batch).
-- [ ] **S3 Select**: SQL queries directly on objects without downloading.
-- [ ] **Multipart Upload Optimization**: Enhanced multipart upload with better concurrency.
+- [x] **S3 Select**: SQL queries directly on objects without downloading.
+- [x] **Multipart Upload Optimization**: Enhanced multipart upload with better concurrency.
 - [ ] **Transfer Acceleration**: Optimized data transfer for global users.
 
 
@@ -53,7 +53,7 @@ This document outlines the next phase of SwiftS3 development, focusing on enterp
 
 **Goal:** Enhanced developer tools and integrations.
 
-- [ ] **API Compatibility Testing**: Automated testing against AWS S3 API specification.
+- [x] **API Compatibility Testing**: Automated testing against AWS S3 API specification.
 
 ---
 

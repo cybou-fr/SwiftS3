@@ -32,6 +32,8 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
 - **Cross-Region Replication**: Automatic replication of objects across multiple regions.
 - **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
+- **S3 Select**: SQL queries directly on objects without downloading.
+- **Multipart Upload Copy**: Copy parts from existing objects during multipart uploads.
 
 ## Architecture
 

@@ -495,6 +495,54 @@ class MockStorage: @unchecked Sendable, StorageBackend {
         return eTag
     }
 
+    func uploadPartCopy(
+        bucket: String, key: String, uploadId: String, partNumber: Int, copySource: String,
+        range: ValidatedRange?
+    ) async throws -> String {
+        if shouldFailOnUploadPart {
+            throw S3Error.internalError
+        }
+
+        if operationDelay > 0 {
+            try await Task.sleep(for: .seconds(operationDelay))
+        }
+
+        guard var upload = multipartUploads[uploadId], upload.bucket == bucket, upload.key == key else {
+            throw S3Error.noSuchUpload
+        }
+
+        // Parse copy source
+        var source = copySource
+        if source.hasPrefix("/") {
+            source.removeFirst()
+        }
+        let components = source.split(separator: "/", maxSplits: 1)
+        guard components.count == 2 else {
+            throw S3Error.invalidRequest
+        }
+        let srcBucket = String(components[0])
+        let srcKey = String(components[1])
+
+        // Get source data
+        guard let bucketData = objectData[srcBucket], let srcData = bucketData[srcKey] else {
+            throw S3Error.noSuchKey
+        }
+
+        var dataToCopy = srcData
+        if let range = range {
+            let start = Int(range.start)
+            let end = Int(range.end)
+            dataToCopy = Data(dataToCopy[start..<end])
+        }
+
+        // Generate mock ETag for the part
+        let eTag = "\"part-copy-\(partNumber)-\(String(format: "%02x", dataToCopy.hashValue))\""
+        upload.parts[partNumber] = eTag
+        multipartUploads[uploadId] = upload
+
+        return eTag
+    }
+
     func completeMultipartUpload(bucket: String, key: String, uploadId: String, parts: [PartInfo]) async throws -> String {
         if shouldFailOnCompleteMultipartUpload {
             throw S3Error.internalError
