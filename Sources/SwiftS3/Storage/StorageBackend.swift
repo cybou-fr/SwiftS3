@@ -184,6 +184,127 @@ public struct VpcConfiguration: Codable, Sendable {
     }
 }
 
+/// Batch operations configuration and job management.
+/// Supports large-scale operations on S3 objects like copying, tagging, and deleting.
+public struct BatchJob: Codable, Sendable {
+    public let id: String
+    public let operation: BatchOperation
+    public let manifest: BatchManifest
+    public let priority: Int
+    public let roleArn: String?
+    public let status: BatchJobStatus
+    public let createdAt: Date
+    public let completedAt: Date?
+    public let failureReasons: [String]
+    public let progress: BatchProgress
+
+    public init(
+        id: String = UUID().uuidString,
+        operation: BatchOperation,
+        manifest: BatchManifest,
+        priority: Int = 0,
+        roleArn: String? = nil,
+        status: BatchJobStatus = .pending,
+        createdAt: Date = Date(),
+        completedAt: Date? = nil,
+        failureReasons: [String] = [],
+        progress: BatchProgress = BatchProgress()
+    ) {
+        self.id = id
+        self.operation = operation
+        self.manifest = manifest
+        self.priority = priority
+        self.roleArn = roleArn
+        self.status = status
+        self.createdAt = createdAt
+        self.completedAt = completedAt
+        self.failureReasons = failureReasons
+        self.progress = progress
+    }
+}
+
+public struct BatchManifest: Codable, Sendable {
+    public let location: BatchManifestLocation
+    public let spec: BatchManifestSpec
+
+    public init(location: BatchManifestLocation, spec: BatchManifestSpec) {
+        self.location = location
+        self.spec = spec
+    }
+}
+
+public struct BatchManifestLocation: Codable, Sendable {
+    public let bucket: String
+    public let key: String
+    public let etag: String?
+
+    public init(bucket: String, key: String, etag: String? = nil) {
+        self.bucket = bucket
+        self.key = key
+        self.etag = etag
+    }
+}
+
+public struct BatchManifestSpec: Codable, Sendable {
+    public let format: BatchManifestFormat
+    public let fields: [String]
+
+    public init(format: BatchManifestFormat, fields: [String]) {
+        self.format = format
+        self.fields = fields
+    }
+}
+
+public enum BatchManifestFormat: String, Codable, Sendable {
+    case s3BatchOperationsCsv20180820 = "S3BatchOperations_CSV_20180820"
+    case s3InventoryReportCsv20161130 = "S3InventoryReport_CSV_20161130"
+}
+
+public struct BatchOperation: Codable, Sendable {
+    public let type: BatchOperationType
+    public let parameters: [String: String]
+
+    public init(type: BatchOperationType, parameters: [String: String] = [:]) {
+        self.type = type
+        self.parameters = parameters
+    }
+}
+
+public enum BatchOperationType: String, Codable, Sendable {
+    case lambdaInvoke = "LambdaInvoke"
+    case s3PutObjectCopy = "S3PutObjectCopy"
+    case s3PutObjectAcl = "S3PutObjectAcl"
+    case s3PutObjectTagging = "S3PutObjectTagging"
+    case s3DeleteObject = "S3DeleteObject"
+    case s3InitiateRestoreObject = "S3InitiateRestoreObject"
+    case s3PutObjectLegalHold = "S3PutObjectLegalHold"
+    case s3PutObjectRetention = "S3PutObjectRetention"
+}
+
+public enum BatchJobStatus: String, Codable, Sendable {
+    case pending = "Pending"
+    case preparing = "Preparing"
+    case ready = "Ready"
+    case active = "Active"
+    case paused = "Paused"
+    case complete = "Complete"
+    case cancelling = "Cancelling"
+    case cancelled = "Cancelled"
+    case failed = "Failed"
+}
+
+public struct BatchProgress: Codable, Sendable {
+    public let totalObjects: Int
+    public let processedObjects: Int
+    public let failedObjects: Int
+
+    public init(totalObjects: Int = 0, processedObjects: Int = 0, failedObjects: Int = 0) {
+        self.totalObjects = totalObjects
+        self.processedObjects = processedObjects
+        self.failedObjects = failedObjects
+    }
+}
+
 /// Audit event types for compliance logging.
 public enum AuditEventType: String, Codable, Sendable {
     case bucketCreated = "BucketCreated"
@@ -716,6 +837,20 @@ protocol StorageBackend: Sendable {
     ) async throws -> (events: [AuditEvent], nextContinuationToken: String?)
     /// Deletes audit events older than the specified date.
     func deleteAuditEvents(olderThan: Date) async throws
+
+    // Batch Operations
+    /// Creates a new batch job for large-scale operations on objects.
+    func createBatchJob(job: BatchJob) async throws -> String
+    /// Retrieves information about a batch job.
+    func getBatchJob(jobId: String) async throws -> BatchJob?
+    /// Lists batch jobs with optional filtering.
+    func listBatchJobs(bucket: String?, status: BatchJobStatus?, limit: Int?, continuationToken: String?) async throws -> (jobs: [BatchJob], nextContinuationToken: String?)
+    /// Updates the status of a batch job.
+    func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws
+    /// Deletes a completed or failed batch job.
+    func deleteBatchJob(jobId: String) async throws
+    /// Executes a batch operation on a single object (called by the batch job processor).
+    func executeBatchOperation(jobId: String, bucket: String, key: String) async throws
 }
 
 /// Configuration for bucket versioning behavior.

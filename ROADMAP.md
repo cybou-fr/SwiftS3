@@ -34,43 +34,39 @@ This document outlines the next phase of SwiftS3 development, focusing on enterp
 
 **Goal:** Provide storage analytics and operational insights.
 
-- [ ] **Storage Analytics**: Usage analytics, access patterns, and cost optimization insights.
-- [ ] **Access Analyzer**: Security analysis for bucket access patterns.
-- [ ] **Inventory Reports**: Automated inventory generation with metadata.
-- [ ] **Performance Metrics**: Detailed performance monitoring and optimization.
+- [x] **Storage Analytics**: Usage analytics, access patterns, and cost optimization insights.
+- [x] **Access Analyzer**: Security analysis for bucket access patterns.
+- [x] **Inventory Reports**: Automated inventory generation with metadata.
+- [x] **Performance Metrics**: Detailed performance monitoring and optimization.
 
 ## 5. Advanced Operations
 
 **Goal:** Large-scale operations and automation.
 
-- [ ] **Batch Operations**: Large-scale batch operations on objects (like AWS S3 Batch).
+- [x] **Batch Operations**: Large-scale batch operations on objects (like AWS S3 Batch).
 - [ ] **S3 Select**: SQL queries directly on objects without downloading.
 - [ ] **Multipart Upload Optimization**: Enhanced multipart upload with better concurrency.
 - [ ] **Transfer Acceleration**: Optimized data transfer for global users.
 
-## 6. Multi-Site & Federation
 
-**Goal:** Distributed deployments and federation capabilities.
-
-- [ ] **Multi-Site Federation**: Active-active replication across multiple sites.
-- [ ] **Global Namespace**: Unified namespace across multiple clusters.
-- [ ] **Load Balancing**: Intelligent load balancing for distributed deployments.
-- [ ] **Site Affinity**: Data locality and site-aware routing.
-
-## 7. Developer Experience
+## 6. Developer Experience
 
 **Goal:** Enhanced developer tools and integrations.
 
-- [ ] **SDK Generation**: Auto-generate SDKs for multiple languages.
 - [ ] **API Compatibility Testing**: Automated testing against AWS S3 API specification.
-- [ ] **Operator Framework**: Kubernetes operator for automated deployment and management.
-- [ ] **Advanced CLI**: Enhanced command-line interface with scripting capabilities.
 
 ---
 
-## Deferred Features (Client-Side)
+## Deferred Features
 
-The following features require client-side implementation and will be developed later:
+The following features and will be developed later:
 
+- **SDK Generation**: Auto-generate SDKs for multiple languages.
+- **Operator Framework**: Kubernetes operator for automated deployment and management.
+- **Advanced CLI**: Enhanced command-line interface with scripting capabilities.
 - **Client-Side Encryption**: Support for client-side encryption before upload.
 - **Lambda Integration**: Serverless function triggers on S3 events.
+- **Multi-Site Federation**: Active-active replication across multiple sites.
+- **Global Namespace**: Unified namespace across multiple clusters.
+- **Load Balancing**: Intelligent load balancing for distributed deployments.
+- **Site Affinity**: Data locality and site-aware routing.

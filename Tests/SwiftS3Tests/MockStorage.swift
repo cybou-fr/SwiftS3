@@ -19,6 +19,7 @@ class MockStorage: @unchecked Sendable, StorageBackend {
     private var bucketTags: [String: [S3Tag]] = [:] // bucket -> tags
     private var lifecycleConfigs: [String: LifecycleConfiguration] = [:] // bucket -> config
     private var versioningConfigs: [String: VersioningConfiguration] = [:] // bucket -> config
+    private var batchJobs: [String: BatchJob] = [:] // jobId -> job
 
     // Multipart upload storage
     private var multipartUploads: [String: MultipartUpload] = [:] // uploadId -> upload
@@ -680,6 +681,85 @@ class MockStorage: @unchecked Sendable, StorageBackend {
 
     func deleteAuditEvents(olderThan: Date) async throws {
         // Mock implementation - do nothing
+    }
+
+    // MARK: - Batch Operations
+
+    func createBatchJob(job: BatchJob) async throws -> String {
+        let jobId = UUID().uuidString
+        batchJobs[jobId] = job
+        return jobId
+    }
+
+    func getBatchJob(jobId: String) async throws -> BatchJob? {
+        return batchJobs[jobId]
+    }
+
+    func listBatchJobs(bucket: String?, status: BatchJobStatus?, limit: Int?, continuationToken: String?) async throws -> (jobs: [BatchJob], nextContinuationToken: String?) {
+        let filteredJobs = batchJobs.values.filter { job in
+            if let bucket = bucket, job.manifest.location.bucket != bucket {
+                return false
+            }
+            if let status = status, job.status != status {
+                return false
+            }
+            return true
+        }
+        
+        // Simple pagination (no continuation token support for mock)
+        let startIndex = 0
+        let endIndex = min(filteredJobs.count, limit ?? 100)
+        let jobs = Array(filteredJobs.sorted(by: { $0.createdAt > $1.createdAt })[startIndex..<endIndex])
+        
+        return (jobs: jobs, nextContinuationToken: nil)
+    }
+
+    func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws {
+        if let job = batchJobs[jobId] {
+            let updatedJob = BatchJob(
+                id: job.id,
+                operation: job.operation,
+                manifest: job.manifest,
+                priority: job.priority,
+                roleArn: job.roleArn,
+                status: status,
+                createdAt: job.createdAt,
+                completedAt: status == .complete || status == .failed || status == .cancelled ? Date() : nil,
+                failureReasons: message != nil ? [message!] : [],
+                progress: job.progress
+            )
+            batchJobs[jobId] = updatedJob
+        }
+    }
+
+    func deleteBatchJob(jobId: String) async throws {
+        batchJobs.removeValue(forKey: jobId)
+    }
+
+    func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {
+        // Mock implementation - just log the operation
+        guard let job = batchJobs[jobId] else {
+            throw S3Error.noSuchKey
+        }
+        
+        // For testing, we'll simulate some operations
+        switch job.operation.type {
+        case .s3PutObjectCopy:
+            // Simulate copy operation
+            break
+        case .s3DeleteObject:
+            // Simulate delete operation
+            break
+        case .s3PutObjectAcl:
+            // Simulate ACL operation
+            break
+        case .s3PutObjectTagging:
+            // Simulate tagging operation
+            break
+        default:
+            // Other operations
+            break
+        }
     }
 
     func shutdown() async throws {

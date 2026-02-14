@@ -151,6 +151,14 @@ protocol MetadataStore: Sendable {
         limit: Int?, continuationToken: String?
     ) async throws -> (events: [AuditEvent], nextContinuationToken: String?)
     func deleteAuditEvents(olderThan: Date) async throws
+
+    // Batch Operations
+    func createBatchJob(job: BatchJob) async throws -> String
+    func getBatchJob(jobId: String) async throws -> BatchJob?
+    func listBatchJobs(bucket: String?, status: BatchJobStatus?, limit: Int?, continuationToken: String?) async throws -> (jobs: [BatchJob], nextContinuationToken: String?)
+    func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws
+    func deleteBatchJob(jobId: String) async throws
+    func executeBatchOperation(jobId: String, bucket: String, key: String) async throws
 }
 
 /// Default implementation storing metadata in sidecar JSON files
@@ -632,5 +640,34 @@ struct FileSystemMetadataStore: MetadataStore {
 
     func deleteAuditEvents(olderThan: Date) async throws {
         // Not implemented for FileSystem - audit events require persistent storage
+    }
+
+    // MARK: - Batch Operations
+
+    func createBatchJob(job: BatchJob) async throws -> String {
+        // Not implemented for FileSystem - batch operations require persistent storage
+        throw S3Error(code: "NotImplemented", message: "Batch operations not supported with filesystem storage", statusCode: .notImplemented)
+    }
+
+    func getBatchJob(jobId: String) async throws -> BatchJob? {
+        // Not implemented for FileSystem - batch operations require persistent storage
+        return nil
+    }
+
+    func listBatchJobs(bucket: String?, status: BatchJobStatus?, limit: Int?, continuationToken: String?) async throws -> (jobs: [BatchJob], nextContinuationToken: String?) {
+        // Not implemented for FileSystem - batch operations require persistent storage
+        return (jobs: [], nextContinuationToken: nil)
+    }
+
+    func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws {
+        // Not implemented for FileSystem - batch operations require persistent storage
+    }
+
+    func deleteBatchJob(jobId: String) async throws {
+        // Not implemented for FileSystem - batch operations require persistent storage
+    }
+
+    func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {
+        // Not implemented for FileSystem - batch operations require persistent storage
     }
 }

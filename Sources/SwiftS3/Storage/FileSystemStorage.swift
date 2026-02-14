@@ -1409,4 +1409,30 @@ actor FileSystemStorage: StorageBackend {
             logger.info("SQS publishing not implemented for ARN: \(queueArn)")
         }
     }
+
+    // MARK: - Batch Operations
+
+    func createBatchJob(job: BatchJob) async throws -> String {
+        return try await metadataStore.createBatchJob(job: job)
+    }
+
+    func getBatchJob(jobId: String) async throws -> BatchJob? {
+        return try await metadataStore.getBatchJob(jobId: jobId)
+    }
+
+    func listBatchJobs(bucket: String?, status: BatchJobStatus?, limit: Int?, continuationToken: String?) async throws -> (jobs: [BatchJob], nextContinuationToken: String?) {
+        return try await metadataStore.listBatchJobs(bucket: bucket, status: status, limit: limit, continuationToken: continuationToken)
+    }
+
+    func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws {
+        try await metadataStore.updateBatchJobStatus(jobId: jobId, status: status, message: message)
+    }
+
+    func deleteBatchJob(jobId: String) async throws {
+        try await metadataStore.deleteBatchJob(jobId: jobId)
+    }
+
+    func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {
+        try await metadataStore.executeBatchOperation(jobId: jobId, bucket: bucket, key: key)
+    }
 }

@@ -218,6 +218,60 @@ struct S3Controller {
             use: { request, context in
                 try await self.deleteAuditEvents(request: request, context: context)
             })
+
+        // Analytics & Insights
+        router.get(
+            "/analytics/storage",
+            use: { request, context in
+                try await self.getStorageAnalytics(request: request, context: context)
+            })
+        router.get(
+            ":bucket/analytics/access-analyzer",
+            use: { request, context in
+                let bucket = try context.parameters.require("bucket")
+                return try await self.getAccessAnalyzer(bucket: bucket, request: request, context: context)
+            })
+        router.get(
+            ":bucket/inventory",
+            use: { request, context in
+                let bucket = try context.parameters.require("bucket")
+                return try await self.getBucketInventory(bucket: bucket, request: request, context: context)
+            })
+        router.get(
+            "/analytics/performance",
+            use: { request, context in
+                try await self.getPerformanceMetrics(request: request, context: context)
+            })
+
+        // Batch Operations
+        router.post(
+            "/batch/job",
+            use: { request, context in
+                try await self.createBatchJob(request: request, context: context)
+            })
+        router.get(
+            "/batch/job/:jobId",
+            use: { request, context in
+                let jobId = try context.parameters.require("jobId")
+                return try await self.getBatchJob(jobId: jobId, request: request, context: context)
+            })
+        router.get(
+            "/batch/jobs",
+            use: { request, context in
+                try await self.listBatchJobs(request: request, context: context)
+            })
+        router.put(
+            "/batch/job/:jobId/status",
+            use: { request, context in
+                let jobId = try context.parameters.require("jobId")
+                return try await self.updateBatchJobStatus(jobId: jobId, request: request, context: context)
+            })
+        router.delete(
+            "/batch/job/:jobId",
+            use: { request, context in
+                let jobId = try context.parameters.require("jobId")
+                return try await self.deleteBatchJob(jobId: jobId, request: request, context: context)
+            })
     }
 
     /// Handles GET / requests to list all buckets owned by the authenticated user.
@@ -1698,5 +1752,757 @@ struct S3Controller {
         try await storage.deleteAuditEvents(olderThan: olderThan)
         logger.info("Audit events deleted", metadata: ["olderThan": "\(olderThan)"])
         return Response(status: .noContent)
+    }
+
+    /// Retrieves storage analytics including usage patterns, access statistics, and cost insights.
+    /// Provides comprehensive analytics for storage optimization and monitoring.
+    ///
+    /// Query parameters:
+    /// - period: Analysis period in days (default: 30)
+    /// - bucket: Filter by specific bucket (optional)
+    ///
+    /// - Parameters:
+    ///   - request: HTTP request with optional query parameters
+    ///   - context: S3 request context
+    /// - Returns: JSON response with storage analytics data
+    /// - Throws: S3Error if access denied
+    func getStorageAnalytics(request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - analytics requires admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        let query = request.uri.queryParameters
+        let periodDays = Int(query.get("period") ?? "30") ?? 30
+        let filterBucket = query.get("bucket")
+        let endDate = Date()
+        let startDate = endDate.addingTimeInterval(-TimeInterval(periodDays * 24 * 60 * 60))
+
+        // Get audit events for the period
+        let (events, _) = try await storage.getAuditEvents(
+            bucket: filterBucket, principal: nil, eventType: nil,
+            startDate: startDate, endDate: endDate, limit: nil, continuationToken: nil
+        )
+
+        // Get all buckets and their objects for storage analysis
+        let buckets = try await storage.listBuckets()
+        var totalStorage: Int64 = 0
+        var bucketStats: [String: [String: Any]] = [:]
+
+        for (bucketName, _) in buckets {
+            if let filterBucket = filterBucket, filterBucket != bucketName { continue }
+            
+            // Get objects in bucket
+            let objects = try await storage.listObjects(
+                bucket: bucketName, prefix: nil, delimiter: nil, marker: nil,
+                continuationToken: nil, maxKeys: nil
+            )
+            
+            var bucketSize: Int64 = 0
+            var objectCount = 0
+            var storageClasses: [String: Int] = [:]
+            
+            for object in objects.objects {
+                bucketSize += object.size
+                objectCount += 1
+                let storageClass = object.storageClass.rawValue
+                storageClasses[storageClass, default: 0] += 1
+            }
+            
+            totalStorage += bucketSize
+            
+            // Count access events for this bucket
+            let bucketEvents = events.filter { $0.bucket == bucketName }
+            let accessCount = bucketEvents.count
+            let downloadCount = bucketEvents.filter { $0.eventType == .objectDownloaded }.count
+            let uploadCount = bucketEvents.filter { $0.eventType == .objectUploaded }.count
+            
+            bucketStats[bucketName] = [
+                "size": bucketSize,
+                "objectCount": objectCount,
+                "storageClasses": storageClasses,
+                "accessCount": accessCount,
+                "downloadCount": downloadCount,
+                "uploadCount": uploadCount
+            ]
+        }
+
+        // Calculate access patterns
+        let totalAccesses = events.count
+        let downloads = events.filter { $0.eventType == .objectDownloaded }.count
+        let uploads = events.filter { $0.eventType == .objectUploaded }.count
+        let deletes = events.filter { $0.eventType == .objectDeleted }.count
+        
+        // Top accessed objects (from audit events)
+        var objectAccessCount: [String: Int] = [:]
+        for event in events where event.key != nil {
+            let key = "\(event.bucket ?? "")/\(event.key ?? "")"
+            objectAccessCount[key, default: 0] += 1
+        }
+        let topAccessedObjects = objectAccessCount.sorted { $0.value > $1.value }.prefix(10).map { ["key": $0.key, "accesses": $0.value] }
+
+        // Cost optimization insights (simplified)
+        var costInsights: [String: Any] = [:]
+        var unusedObjects = 0
+        var oldObjects = 0
+        let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        
+        for (bucketName, _) in bucketStats {
+            let objects = try await storage.listObjects(
+                bucket: bucketName, prefix: nil, delimiter: nil, marker: nil,
+                continuationToken: nil, maxKeys: nil
+            )
+            
+            for object in objects.objects {
+                // Check if object hasn't been accessed recently
+                let recentAccesses = events.filter { 
+                    $0.key == object.key && $0.bucket == bucketName && $0.timestamp > thirtyDaysAgo 
+                }.count
+                
+                if recentAccesses == 0 && object.lastModified < thirtyDaysAgo {
+                    unusedObjects += 1
+                }
+                
+                if object.lastModified < thirtyDaysAgo.addingTimeInterval(-365 * 24 * 60 * 60) { // 1 year old
+                    oldObjects += 1
+                }
+            }
+        }
+        
+        costInsights["unusedObjects"] = unusedObjects
+        costInsights["oldObjects"] = oldObjects
+        costInsights["recommendations"] = [
+            "Consider moving \(unusedObjects) unused objects to cheaper storage classes",
+            "Consider lifecycle policies for \(oldObjects) old objects"
+        ]
+
+        let analytics: [String: Any] = [
+            "period": [
+                "start": ISO8601DateFormatter().string(from: startDate),
+                "end": ISO8601DateFormatter().string(from: endDate),
+                "days": periodDays
+            ],
+            "summary": [
+                "totalStorage": totalStorage,
+                "totalBuckets": bucketStats.count,
+                "totalAccesses": totalAccesses,
+                "downloads": downloads,
+                "uploads": uploads,
+                "deletes": deletes
+            ],
+            "bucketStats": bucketStats,
+            "topAccessedObjects": topAccessedObjects,
+            "costInsights": costInsights
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: analytics, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Performs security analysis on bucket access patterns to identify potential security issues.
+    /// Analyzes audit events to detect unusual access patterns, public access risks, and security threats.
+    ///
+    /// - Parameters:
+    ///   - bucket: Name of the bucket to analyze
+    ///   - request: HTTP request
+    ///   - context: S3 request context
+    /// - Returns: JSON response with access analysis results
+    /// - Throws: S3Error if bucket not found or access denied
+    func getAccessAnalyzer(bucket: String, request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - access analyzer requires admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        // Verify bucket exists
+        _ = try await storage.headBucket(name: bucket)
+
+        let query = request.uri.queryParameters
+        let periodDays = Int(query.get("period") ?? "7") ?? 7
+        let endDate = Date()
+        let startDate = endDate.addingTimeInterval(-TimeInterval(periodDays * 24 * 60 * 60))
+
+        // Get audit events for the bucket
+        let (events, _) = try await storage.getAuditEvents(
+            bucket: bucket, principal: nil, eventType: nil,
+            startDate: startDate, endDate: endDate, limit: nil, continuationToken: nil
+        )
+
+        // Analyze access patterns
+        var findings: [[String: Any]] = []
+        var principalAccess: [String: [AuditEvent]] = [:]
+        var ipAccess: [String: [AuditEvent]] = [:]
+        var errorEvents: [AuditEvent] = []
+        
+        for event in events {
+            let principal = event.principal
+            principalAccess[principal, default: []].append(event)
+            
+            if let ip = event.sourceIp {
+                ipAccess[ip, default: []].append(event)
+            }
+            
+            if event.status != "200" && event.status != "201" && event.status != "204" {
+                errorEvents.append(event)
+            }
+        }
+
+        // Check for unusual access patterns
+        let totalEvents = events.count
+        
+        // High error rate
+        let errorRate = Double(errorEvents.count) / Double(totalEvents)
+        if errorRate > 0.1 { // More than 10% errors
+            findings.append([
+                "severity": "high",
+                "type": "high_error_rate",
+                "description": "High error rate detected (\(String(format: "%.1f", errorRate * 100))%)",
+                "recommendation": "Review error logs and check for authentication or permission issues"
+            ])
+        }
+
+        // Access from unusual IPs
+        for (ip, ipEvents) in ipAccess {
+            let accessCount = ipEvents.count
+            if accessCount > totalEvents / 2 { // One IP accounts for more than half the access
+                findings.append([
+                    "severity": "medium",
+                    "type": "concentrated_access",
+                    "description": "High concentration of access from single IP: \(ip) (\(accessCount) requests)",
+                    "recommendation": "Verify if this is expected behavior or potential abuse"
+                ])
+            }
+        }
+
+        // Failed authentication attempts
+        let authFailures = events.filter { $0.eventType == .authenticationFailed }.count
+        if authFailures > 10 {
+            findings.append([
+                "severity": "high",
+                "type": "authentication_failures",
+                "description": "\(authFailures) authentication failures detected",
+                "recommendation": "Check for brute force attempts or misconfigured credentials"
+            ])
+        }
+
+        // Access denied events
+        let accessDenied = events.filter { $0.eventType == .accessDenied }.count
+        if accessDenied > Int(Double(totalEvents) * 0.05) { // More than 5% access denied
+            findings.append([
+                "severity": "medium",
+                "type": "access_denied",
+                "description": "\(accessDenied) access denied events (\(String(format: "%.1f", Double(accessDenied)/Double(totalEvents)*100))%)",
+                "recommendation": "Review permissions and ensure proper access policies"
+            ])
+        }
+
+        // Check for public access patterns (simplified - would need more sophisticated analysis)
+        let anonymousAccess = events.filter { $0.principal == "anonymous" }.count
+        if anonymousAccess > 0 {
+            findings.append([
+                "severity": "high",
+                "type": "anonymous_access",
+                "description": "\(anonymousAccess) requests from anonymous users detected",
+                "recommendation": "Review bucket policies and ensure proper authentication requirements"
+            ])
+        }
+
+        // Unusual time patterns
+        var hourlyAccess: [Int: Int] = [:]
+        for event in events {
+            let hour = Calendar.current.component(.hour, from: event.timestamp)
+            hourlyAccess[hour, default: 0] += 1
+        }
+        
+        let avgHourly = Double(totalEvents) / 24.0
+        for (hour, count) in hourlyAccess {
+            if Double(count) > avgHourly * 3 { // 3x average
+                findings.append([
+                    "severity": "low",
+                    "type": "unusual_timing",
+                    "description": "Unusual access concentration at hour \(hour) (\(count) requests)",
+                    "recommendation": "Monitor for automated access or unusual usage patterns"
+                ])
+            }
+        }
+
+        let analysis: [String: Any] = [
+            "bucket": bucket,
+            "period": [
+                "start": ISO8601DateFormatter().string(from: startDate),
+                "end": ISO8601DateFormatter().string(from: endDate),
+                "days": periodDays
+            ],
+            "summary": [
+                "totalEvents": totalEvents,
+                "uniquePrincipals": principalAccess.count,
+                "uniqueIPs": ipAccess.count,
+                "errorRate": errorRate,
+                "findingsCount": findings.count
+            ],
+            "findings": findings
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: analysis, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Generates an inventory report for a bucket with detailed object metadata.
+    /// Creates a comprehensive CSV or JSON report of all objects in the bucket.
+    ///
+    /// Query parameters:
+    /// - format: Report format - "csv" or "json" (default: json)
+    /// - prefix: Filter objects by prefix (optional)
+    ///
+    /// - Parameters:
+    ///   - bucket: Name of the bucket to inventory
+    ///   - request: HTTP request with query parameters
+    ///   - context: S3 request context
+    /// - Returns: Response with inventory report in requested format
+    /// - Throws: S3Error if bucket not found or access denied
+    func getBucketInventory(bucket: String, request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - inventory requires read access to bucket
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        // Verify bucket exists
+        _ = try await storage.headBucket(name: bucket)
+
+        let query = request.uri.queryParameters
+        let format = query.get("format") ?? "json"
+        let prefix = query.get("prefix")
+
+        // Get all objects in bucket
+        let result = try await storage.listObjects(
+            bucket: bucket, prefix: prefix, delimiter: nil, marker: nil,
+            continuationToken: nil, maxKeys: nil
+        )
+
+        if format == "csv" {
+            // Generate CSV report
+            var csv = "Key,Size,LastModified,ETag,StorageClass,Owner\n"
+            
+            for object in result.objects {
+                let key = object.key.replacingOccurrences(of: "\"", with: "\"\"") // Escape quotes
+                let size = "\(object.size)"
+                let lastModified = ISO8601DateFormatter().string(from: object.lastModified)
+                let etag = object.eTag ?? ""
+                let storageClass = object.storageClass.rawValue
+                let owner = object.owner ?? ""
+                
+                csv += "\"\(key)\",\(size),\(lastModified),\"\(etag)\",\(storageClass),\"\(owner)\"\n"
+            }
+            
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: "text/csv",
+                    HTTPField.Name("Content-Disposition")!: "attachment; filename=\"\(bucket)-inventory.csv\""
+                ],
+                body: .init(byteBuffer: ByteBuffer(string: csv))
+            )
+        } else {
+            // Generate JSON report
+            let inventory: [String: Any] = [
+                "bucket": bucket,
+                "generated": ISO8601DateFormatter().string(from: Date()),
+                "totalObjects": result.objects.count,
+                "prefix": prefix as Any,
+                "objects": result.objects.map { object in
+                    [
+                        "key": object.key,
+                        "size": object.size,
+                        "lastModified": ISO8601DateFormatter().string(from: object.lastModified),
+                        "etag": object.eTag as Any,
+                        "contentType": object.contentType as Any,
+                        "storageClass": object.storageClass.rawValue,
+                        "owner": object.owner as Any,
+                        "versionId": object.versionId,
+                        "isLatest": object.isLatest,
+                        "checksumAlgorithm": object.checksumAlgorithm?.rawValue as Any,
+                        "checksumValue": object.checksumValue as Any
+                    ]
+                }
+            ]
+            
+            let jsonData = try JSONSerialization.data(withJSONObject: inventory, options: .prettyPrinted)
+            return Response(
+                status: .ok,
+                headers: [.contentType: "application/json"],
+                body: .init(byteBuffer: ByteBuffer(data: jsonData))
+            )
+        }
+    }
+
+    /// Retrieves detailed performance metrics for monitoring and optimization.
+    /// Extends basic metrics with detailed performance analysis and recommendations.
+    ///
+    /// - Parameters:
+    ///   - request: HTTP request
+    ///   - context: S3 request context
+    /// - Returns: JSON response with detailed performance metrics
+    /// - Throws: S3Error if access denied
+    func getPerformanceMetrics(request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - performance metrics requires admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        let query = request.uri.queryParameters
+        let periodHours = Int(query.get("period") ?? "24") ?? 24
+        let endDate = Date()
+        let startDate = endDate.addingTimeInterval(-TimeInterval(periodHours * 60 * 60))
+
+        // Get audit events for performance analysis
+        let (events, _) = try await storage.getAuditEvents(
+            bucket: nil, principal: nil, eventType: nil,
+            startDate: startDate, endDate: endDate, limit: nil, continuationToken: nil
+        )
+
+        // Analyze performance metrics
+        var operationCounts: [String: Int] = [:]
+        var errorCounts: [String: Int] = [:]
+        var hourlyThroughput: [Int: Int] = [:]
+        
+        // Note: We don't have actual latency data in audit events, so we'll use operation counts
+        // In a real implementation, you'd want to store request duration in audit events
+        for event in events {
+            operationCounts[event.operation, default: 0] += 1
+            
+            if event.status.starts(with: "4") || event.status.starts(with: "5") {
+                errorCounts[event.operation, default: 0] += 1
+            }
+            
+            let hour = Calendar.current.component(.hour, from: event.timestamp)
+            hourlyThroughput[hour, default: 0] += 1
+        }
+
+        // Calculate error rates
+        var errorRates: [String: Double] = [:]
+        for (operation, count) in operationCounts {
+            let errors = errorCounts[operation] ?? 0
+            errorRates[operation] = Double(errors) / Double(count)
+        }
+
+        // Get basic metrics from the metrics actor
+        let basicMetrics = await metrics.getMetrics()
+        
+        // Calculate throughput statistics
+        let totalRequests = events.count
+        let avgRequestsPerHour = Double(totalRequests) / Double(periodHours)
+        let peakHour = hourlyThroughput.max { $0.value < $1.value }?.key ?? 0
+        let peakRequests = hourlyThroughput[peakHour] ?? 0
+
+        // Performance recommendations
+        var recommendations: [String] = []
+        
+        if avgRequestsPerHour > 1000 {
+            recommendations.append("High request volume detected. Consider scaling infrastructure.")
+        }
+        
+        let highErrorOps = errorRates.filter { $0.value > 0.05 }.keys
+        if !highErrorOps.isEmpty {
+            recommendations.append("High error rates for operations: \(highErrorOps.joined(separator: ", "))")
+        }
+        
+        if Double(peakRequests) > avgRequestsPerHour * 2 {
+            recommendations.append("Significant traffic spikes detected. Consider load balancing.")
+        }
+
+        let performance: [String: Any] = [
+            "period": [
+                "start": ISO8601DateFormatter().string(from: startDate),
+                "end": ISO8601DateFormatter().string(from: endDate),
+                "hours": periodHours
+            ],
+            "throughput": [
+                "totalRequests": totalRequests,
+                "avgRequestsPerHour": avgRequestsPerHour,
+                "peakHour": peakHour,
+                "peakRequests": peakRequests,
+                "hourlyBreakdown": hourlyThroughput
+            ],
+            "operations": [
+                "counts": operationCounts,
+                "errorRates": errorRates
+            ],
+            "basicMetrics": basicMetrics,
+            "recommendations": recommendations
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: performance, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Creates a new batch job for large-scale operations on objects.
+    /// Supports operations like copying, tagging, and deleting objects in bulk.
+    ///
+    /// Expected JSON body:
+    /// ```json
+    /// {
+    ///   "operation": {
+    ///     "type": "S3PutObjectCopy",
+    ///     "parameters": {
+    ///       "targetBucket": "destination-bucket",
+    ///       "targetPrefix": "copied/"
+    ///     }
+    ///   },
+    ///   "manifest": {
+    ///     "location": {
+    ///       "bucket": "my-bucket",
+    ///       "key": "manifest.csv"
+    ///     },
+    ///     "spec": {
+    ///       "format": "S3BatchOperations_CSV_20180820",
+    ///       "fields": ["Bucket", "Key"]
+    ///     }
+    ///   },
+    ///   "priority": 1
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - request: HTTP request with JSON body containing job specification
+    ///   - context: S3 request context
+    /// - Returns: JSON response with created job details
+    /// - Throws: S3Error if request is invalid or access denied
+    func createBatchJob(request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - batch operations require admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        // Parse JSON body
+        let body = try await request.body.collect(upTo: 1024 * 1024) // 1MB limit
+        let json = try JSONSerialization.jsonObject(with: body, options: []) as? [String: Any] ?? [:]
+
+        // Extract operation
+        guard let operationDict = json["operation"] as? [String: Any],
+              let operationTypeStr = operationDict["type"] as? String,
+              let operationType = BatchOperationType(rawValue: operationTypeStr),
+              let operationParams = operationDict["parameters"] as? [String: String] else {
+            throw S3Error(code: "InvalidRequest", message: "Invalid operation specification", statusCode: .badRequest)
+        }
+        let operation = BatchOperation(type: operationType, parameters: operationParams)
+
+        // Extract manifest
+        guard let manifestDict = json["manifest"] as? [String: Any],
+              let locationDict = manifestDict["location"] as? [String: Any],
+              let manifestBucket = locationDict["bucket"] as? String,
+              let manifestKey = locationDict["key"] as? String,
+              let specDict = manifestDict["spec"] as? [String: Any],
+              let formatStr = specDict["format"] as? String,
+              let format = BatchManifestFormat(rawValue: formatStr),
+              let fields = specDict["fields"] as? [String] else {
+            throw S3Error(code: "InvalidRequest", message: "Invalid manifest specification", statusCode: .badRequest)
+        }
+        let manifestEtag = locationDict["etag"] as? String
+        let manifestLocation = BatchManifestLocation(bucket: manifestBucket, key: manifestKey, etag: manifestEtag)
+        let manifestSpec = BatchManifestSpec(format: format, fields: fields)
+        let manifest = BatchManifest(location: manifestLocation, spec: manifestSpec)
+
+        // Extract optional fields
+        let priority = json["priority"] as? Int ?? 0
+        let roleArn = json["roleArn"] as? String
+
+        let job = BatchJob(
+            operation: operation,
+            manifest: manifest,
+            priority: priority,
+            roleArn: roleArn
+        )
+
+        let jobId = try await storage.createBatchJob(job: job)
+
+        let response: [String: Any] = [
+            "jobId": jobId,
+            "status": "created"
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
+        return Response(status: .created, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Retrieves information about a specific batch job.
+    /// Returns detailed job status, progress, and configuration.
+    ///
+    /// - Parameters:
+    ///   - jobId: The ID of the batch job to retrieve
+    ///   - request: HTTP request
+    ///   - context: S3 request context
+    /// - Returns: JSON response with job details
+    /// - Throws: S3Error if job not found or access denied
+    func getBatchJob(jobId: String, request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - batch operations require admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        guard let job = try await storage.getBatchJob(jobId: jobId) else {
+            throw S3Error.noSuchKey
+        }
+
+        let jobDict: [String: Any] = [
+            "id": job.id,
+            "operation": [
+                "type": job.operation.type.rawValue,
+                "parameters": job.operation.parameters
+            ],
+            "manifest": [
+                "location": [
+                    "bucket": job.manifest.location.bucket,
+                    "key": job.manifest.location.key,
+                    "etag": job.manifest.location.etag as Any
+                ],
+                "spec": [
+                    "format": job.manifest.spec.format.rawValue,
+                    "fields": job.manifest.spec.fields
+                ]
+            ],
+            "priority": job.priority,
+            "roleArn": job.roleArn as Any,
+            "status": job.status.rawValue,
+            "createdAt": ISO8601DateFormatter().string(from: job.createdAt),
+            "completedAt": job.completedAt.map { ISO8601DateFormatter().string(from: $0) } as Any,
+            "failureReasons": job.failureReasons,
+            "progress": [
+                "totalObjects": job.progress.totalObjects,
+                "processedObjects": job.progress.processedObjects,
+                "failedObjects": job.progress.failedObjects
+            ]
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: jobDict, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Lists batch jobs with optional filtering.
+    /// Supports filtering by bucket and status.
+    ///
+    /// Query parameters:
+    /// - bucket: Filter by manifest bucket (optional)
+    /// - status: Filter by job status (optional)
+    /// - maxJobs: Maximum number of jobs to return (default: 100)
+    ///
+    /// - Parameters:
+    ///   - request: HTTP request with optional query parameters
+    ///   - context: S3 request context
+    /// - Returns: JSON response with list of jobs
+    /// - Throws: S3Error if access denied
+    func listBatchJobs(request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - batch operations require admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        let query = request.uri.queryParameters
+        let bucket = query.get("bucket")
+        let statusStr = query.get("status")
+        let status = statusStr.flatMap { BatchJobStatus(rawValue: $0) }
+        let limit = Int(query.get("maxJobs") ?? "100") ?? 100
+        let continuationToken = query.get("continuationToken")
+
+        let (jobs, nextContinuationToken) = try await storage.listBatchJobs(bucket: bucket, status: status, limit: limit, continuationToken: continuationToken)
+
+        let jobsArray = jobs.map { job -> [String: Any] in
+            [
+                "id": job.id,
+                "operation": [
+                    "type": job.operation.type.rawValue,
+                    "parameters": job.operation.parameters
+                ],
+                "manifest": [
+                    "location": [
+                        "bucket": job.manifest.location.bucket,
+                        "key": job.manifest.location.key
+                    ]
+                ],
+                "status": job.status.rawValue,
+                "createdAt": ISO8601DateFormatter().string(from: job.createdAt),
+                "progress": [
+                    "totalObjects": job.progress.totalObjects,
+                    "processedObjects": job.progress.processedObjects,
+                    "failedObjects": job.progress.failedObjects
+                ]
+            ]
+        }
+
+        var response: [String: Any] = [
+            "jobs": jobsArray,
+            "totalCount": jobsArray.count
+        ]
+        
+        if let nextToken = nextContinuationToken {
+            response["nextContinuationToken"] = nextToken
+        }
+
+        let jsonData = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Updates the status of a batch job.
+    /// Used to pause, resume, or cancel batch jobs.
+    ///
+    /// Expected JSON body:
+    /// ```json
+    /// {
+    ///   "status": "Paused",
+    ///   "failureReasons": ["Optional failure description"]
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - jobId: The ID of the batch job to update
+    ///   - request: HTTP request with JSON body containing status update
+    ///   - context: S3 request context
+    /// - Returns: JSON response confirming the update
+    /// - Throws: S3Error if job not found or access denied
+    func updateBatchJobStatus(jobId: String, request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - batch operations require admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        // Parse JSON body
+        let body = try await request.body.collect(upTo: 1024 * 1024) // 1MB limit
+        let json = try JSONSerialization.jsonObject(with: body, options: []) as? [String: Any] ?? [:]
+
+        guard let statusStr = json["status"] as? String,
+              let status = BatchJobStatus(rawValue: statusStr) else {
+            throw S3Error(code: "InvalidRequest", message: "Invalid status", statusCode: .badRequest)
+        }
+
+        let failureReasons = json["failureReasons"] as? [String]
+        let message = failureReasons?.joined(separator: "; ") ?? json["message"] as? String
+
+        try await storage.updateBatchJobStatus(jobId: jobId, status: status, message: message)
+
+        let response: [String: Any] = [
+            "jobId": jobId,
+            "status": status.rawValue,
+            "updated": true
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
+    }
+
+    /// Deletes a completed or failed batch job.
+    /// Removes the job from the system and cleans up associated resources.
+    ///
+    /// - Parameters:
+    ///   - jobId: The ID of the batch job to delete
+    ///   - request: HTTP request
+    ///   - context: S3 request context
+    /// - Returns: JSON response confirming deletion
+    /// - Throws: S3Error if job not found or still active
+    func deleteBatchJob(jobId: String, request: Request, context: S3RequestContext) async throws -> Response {
+        // Check access - batch operations require admin-level access
+        // For now, allow any authenticated user (this should be restricted in production)
+
+        // Check if job exists and is in a deletable state
+        guard let job = try await storage.getBatchJob(jobId: jobId) else {
+            throw S3Error.noSuchKey
+        }
+
+        // Only allow deletion of completed, failed, or cancelled jobs
+        guard job.status == .complete || job.status == .failed || job.status == .cancelled else {
+            throw S3Error(code: "InvalidRequest", message: "Cannot delete active batch job", statusCode: .badRequest)
+        }
+
+        try await storage.deleteBatchJob(jobId: jobId)
+
+        let response: [String: Any] = [
+            "jobId": jobId,
+            "deleted": true
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
+        return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: jsonData)))
     }
 }

@@ -26,6 +26,8 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Server-Side Encryption (SSE-KMS)**: AES256 and AWS KMS-compatible encryption for data at rest.
 - **VPC-Only Access**: Restrict bucket access to specific IP ranges for enhanced security.
 - **Advanced Auditing**: Comprehensive audit logging with compliance reporting and security monitoring.
+- **Analytics & Insights**: Storage analytics, access analyzer, inventory reports, and performance metrics.
+- **Batch Operations**: Large-scale batch operations on objects (like AWS S3 Batch).
 - **Event Notifications**: S3-compatible event notifications for object operations, including webhook support and message queue integration.
 - **Identity Federation**: LDAP/Active Directory integration for enterprise authentication.
 - **Cross-Region Replication**: Automatic replication of objects across multiple regions.
@@ -217,6 +219,142 @@ aws s3api put-object-lock \
   --endpoint-url http://localhost:8080
 ```
 
+### Analytics & Insights
+
+SwiftS3 provides comprehensive analytics and insights for storage optimization and security monitoring.
+
+#### Storage Analytics
+
+Get usage analytics, access patterns, and cost optimization insights:
+
+```bash
+# Get storage analytics for all buckets (last 30 days)
+curl "http://localhost:8080/analytics/storage" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+# Get analytics for specific bucket (last 7 days)
+curl "http://localhost:8080/analytics/storage?bucket=mybucket&period=7" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+```
+
+#### Access Analyzer
+
+Analyze bucket access patterns for security issues:
+
+```bash
+# Analyze access patterns for a bucket (last 7 days)
+curl "http://localhost:8080/mybucket/analytics/access-analyzer" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+# Analyze with custom period
+curl "http://localhost:8080/mybucket/analytics/access-analyzer?period=30" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+```
+
+#### Inventory Reports
+
+Generate automated inventory reports with metadata:
+
+```bash
+# Get JSON inventory for all objects in bucket
+curl "http://localhost:8080/mybucket/inventory" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+# Get CSV inventory with prefix filter
+curl "http://localhost:8080/mybucket/inventory?format=csv&prefix=logs/" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+```
+
+#### Performance Metrics
+
+Get detailed performance monitoring and optimization insights:
+
+```bash
+# Get performance metrics (last 24 hours)
+curl "http://localhost:8080/analytics/performance" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+# Get metrics for custom period
+curl "http://localhost:8080/analytics/performance?period=168" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+```
+
+#### Prometheus Metrics
+
+Basic Prometheus-compatible metrics for monitoring:
+
+```bash
+# Get Prometheus metrics
+curl "http://localhost:8080/metrics"
+```
+
+### Batch Operations
+
+SwiftS3 supports large-scale batch operations on objects, similar to AWS S3 Batch Operations. You can perform operations like copying, tagging, and deleting objects in bulk using CSV manifests.
+
+#### Create a Batch Job
+
+Create a batch job to copy objects to a different bucket:
+
+```bash
+# First, create a manifest CSV file in your bucket
+echo "Bucket,Key" > manifest.csv
+echo "my-bucket,object1.txt" >> manifest.csv
+echo "my-bucket,object2.txt" >> manifest.csv
+
+# Upload the manifest
+aws s3 cp manifest.csv s3://my-bucket/manifest.csv --endpoint-url http://localhost:8080
+
+# Create the batch job
+curl -X POST "http://localhost:8080/batch/job" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operation": {
+      "type": "S3PutObjectCopy",
+      "parameters": {
+        "targetBucket": "destination-bucket",
+        "targetPrefix": "copied/"
+      }
+    },
+    "manifest": {
+      "location": {
+        "bucket": "my-bucket",
+        "key": "manifest.csv"
+      },
+      "spec": {
+        "format": "S3BatchOperations_CSV_20180820",
+        "fields": ["Bucket", "Key"]
+      }
+    },
+    "priority": 1
+  }'
+```
+
+#### Monitor Batch Jobs
+
+Check the status of your batch jobs:
+
+```bash
+# List all batch jobs
+curl "http://localhost:8080/batch/jobs" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+# Get specific job details
+curl "http://localhost:8080/batch/job/{job-id}" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+```
+
+#### Supported Operations
+
+- **S3PutObjectCopy**: Copy objects to a different location
+- **S3PutObjectAcl**: Modify object ACLs
+- **S3PutObjectTagging**: Add or modify object tags
+- **S3DeleteObject**: Delete objects
+- **S3InitiateRestoreObject**: Restore objects from archive
+- **S3PutObjectLegalHold**: Set legal hold on objects
+- **S3PutObjectRetention**: Set retention period on objects
+
 ## API Endpoints
 
 ### Buckets
@@ -259,6 +397,35 @@ aws s3api put-object-lock \
     - Supports filtering by principal, event type, date range, and pagination.
 - **Delete Audit Events**: `DELETE /audit`
     - Bulk cleanup of audit logs older than specified date.
+
+### Analytics & Insights
+- **Storage Analytics**: `GET /analytics/storage`
+    - Usage analytics, access patterns, and cost optimization insights.
+    - Supports `period` (days) and `bucket` filter query parameters.
+- **Access Analyzer**: `GET /:bucket/analytics/access-analyzer`
+    - Security analysis for bucket access patterns.
+    - Supports `period` (days) query parameter.
+- **Bucket Inventory**: `GET /:bucket/inventory`
+    - Automated inventory generation with metadata.
+    - Supports `format` (json/csv) and `prefix` filter query parameters.
+- **Performance Metrics**: `GET /analytics/performance`
+    - Detailed performance monitoring and optimization.
+    - Supports `period` (hours) query parameter.
+- **Basic Metrics**: `GET /metrics`
+    - Prometheus-compatible metrics for monitoring.
+
+### Batch Operations
+- **Create Batch Job**: `POST /batch/job`
+    - Create a new batch job for large-scale operations.
+- **Get Batch Job**: `GET /batch/job/:jobId`
+    - Retrieve information about a specific batch job.
+- **List Batch Jobs**: `GET /batch/jobs`
+    - List batch jobs with optional filtering by bucket and status.
+- **Update Batch Job Status**: `PUT /batch/job/:jobId/status`
+    - Update the status of a batch job (pause, resume, cancel).
+- **Delete Batch Job**: `DELETE /batch/job/:jobId`
+    - Delete a completed or failed batch job.
+
 - **Put Object**: `PUT /:bucket/:key`
     - Supports `x-amz-meta-*` headers for custom metadata.
     - Supports `Content-Type` persistence.

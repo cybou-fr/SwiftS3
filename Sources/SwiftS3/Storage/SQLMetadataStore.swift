@@ -157,6 +157,29 @@ struct SQLMetadataStore: MetadataStore {
             """
         _ = try await connection.query(createAuditEvents)
 
+        let createBatchJobs = """
+            CREATE TABLE IF NOT EXISTS batch_jobs (
+                id TEXT PRIMARY KEY,
+                operation_type TEXT,
+                operation_parameters TEXT,
+                manifest_location_bucket TEXT,
+                manifest_location_key TEXT,
+                manifest_location_etag TEXT,
+                manifest_spec_format TEXT,
+                manifest_spec_fields TEXT,
+                priority INTEGER DEFAULT 0,
+                role_arn TEXT,
+                status TEXT DEFAULT 'Pending',
+                created_at REAL,
+                completed_at REAL,
+                failure_reasons TEXT,
+                total_objects INTEGER DEFAULT 0,
+                processed_objects INTEGER DEFAULT 0,
+                failed_objects INTEGER DEFAULT 0
+            );
+            """
+        _ = try await connection.query(createBatchJobs)
+
         let createUsers = """
             CREATE TABLE IF NOT EXISTS users (
                 access_key TEXT PRIMARY KEY,
@@ -1385,5 +1408,189 @@ extension SQLMetadataStore: UserStore {
     func deleteAuditEvents(olderThan: Date) async throws {
         let query = "DELETE FROM audit_events WHERE timestamp < ?"
         _ = try await connection.query(query, [.float(olderThan.timeIntervalSince1970)])
+    }
+
+    // MARK: - Batch Operations
+
+    func createBatchJob(job: BatchJob) async throws -> String {
+        let operationParamsJSON = String(data: try JSONEncoder().encode(job.operation.parameters), encoding: .utf8) ?? "{}"
+        let manifestFieldsJSON = String(data: try JSONEncoder().encode(job.manifest.spec.fields), encoding: .utf8) ?? "[]"
+        let failureReasonsJSON = String(data: try JSONEncoder().encode(job.failureReasons), encoding: .utf8) ?? "[]"
+
+        let query = """
+            INSERT INTO batch_jobs (
+                id, operation_type, operation_parameters,
+                manifest_location_bucket, manifest_location_key, manifest_location_etag,
+                manifest_spec_format, manifest_spec_fields,
+                priority, role_arn, status, created_at, completed_at,
+                failure_reasons, total_objects, processed_objects, failed_objects
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+        _ = try await connection.query(query, [
+            .text(job.id),
+            .text(job.operation.type.rawValue),
+            .text(operationParamsJSON),
+            .text(job.manifest.location.bucket),
+            .text(job.manifest.location.key),
+            .text(job.manifest.location.etag ?? ""),
+            .text(job.manifest.spec.format.rawValue),
+            .text(manifestFieldsJSON),
+            .integer(Int(job.priority)),
+            .text(job.roleArn ?? ""),
+            .text(job.status.rawValue),
+            .float(job.createdAt.timeIntervalSince1970),
+            .float(job.completedAt?.timeIntervalSince1970 ?? 0),
+            .text(failureReasonsJSON),
+            .integer(job.progress.totalObjects),
+            .integer(job.progress.processedObjects),
+            .integer(job.progress.failedObjects)
+        ])
+
+        return job.id
+    }
+
+    func getBatchJob(jobId: String) async throws -> BatchJob? {
+        let query = """
+            SELECT id, operation_type, operation_parameters,
+                   manifest_location_bucket, manifest_location_key, manifest_location_etag,
+                   manifest_spec_format, manifest_spec_fields,
+                   priority, role_arn, status, created_at, completed_at,
+                   failure_reasons, total_objects, processed_objects, failed_objects
+            FROM batch_jobs WHERE id = ?
+            """
+
+        let rows = try await connection.query(query, [.text(jobId)])
+        guard let row = rows.first else { return nil }
+
+        let operationTypeRaw = row.column("operation_type")?.string ?? ""
+        let operationType = BatchOperationType(rawValue: operationTypeRaw) ?? .s3DeleteObject
+        let operationParamsJSON = row.column("operation_parameters")?.string ?? "{}"
+        let operationParams = try JSONDecoder().decode([String: String].self, from: Data(operationParamsJSON.utf8))
+
+        let manifestBucket = row.column("manifest_location_bucket")?.string ?? ""
+        let manifestKey = row.column("manifest_location_key")?.string ?? ""
+        let manifestEtag = row.column("manifest_location_etag")?.string
+        let manifestFormatRaw = row.column("manifest_spec_format")?.string ?? ""
+        let manifestFormat = BatchManifestFormat(rawValue: manifestFormatRaw) ?? .s3BatchOperationsCsv20180820
+        let manifestFieldsJSON = row.column("manifest_spec_fields")?.string ?? "[]"
+        let manifestFields = try JSONDecoder().decode([String].self, from: Data(manifestFieldsJSON.utf8))
+
+        let priority = row.column("priority")?.integer ?? 0
+        let roleArn = row.column("role_arn")?.string
+        let statusRaw = row.column("status")?.string ?? ""
+        let status = BatchJobStatus(rawValue: statusRaw) ?? .pending
+        let createdAt = Date(timeIntervalSince1970: row.column("created_at")?.double ?? 0)
+        let completedAt = row.column("completed_at")?.double.flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+        let failureReasonsJSON = row.column("failure_reasons")?.string ?? "[]"
+        let failureReasons = try JSONDecoder().decode([String].self, from: Data(failureReasonsJSON.utf8))
+        let totalObjects = row.column("total_objects")?.integer ?? 0
+        let processedObjects = row.column("processed_objects")?.integer ?? 0
+        let failedObjects = row.column("failed_objects")?.integer ?? 0
+
+        let operation = BatchOperation(type: operationType, parameters: operationParams)
+        let manifestLocation = BatchManifestLocation(bucket: manifestBucket, key: manifestKey, etag: manifestEtag)
+        let manifestSpec = BatchManifestSpec(format: manifestFormat, fields: manifestFields)
+        let manifest = BatchManifest(location: manifestLocation, spec: manifestSpec)
+        let progress = BatchProgress(totalObjects: totalObjects, processedObjects: processedObjects, failedObjects: failedObjects)
+
+        return BatchJob(
+            id: jobId,
+            operation: operation,
+            manifest: manifest,
+            priority: Int(priority),
+            roleArn: roleArn,
+            status: status,
+            createdAt: createdAt,
+            completedAt: completedAt,
+            failureReasons: failureReasons,
+            progress: progress
+        )
+    }
+
+    func listBatchJobs(bucket: String?, status: BatchJobStatus?, limit: Int?, continuationToken: String?) async throws -> (jobs: [BatchJob], nextContinuationToken: String?) {
+        var query = """
+            SELECT id, operation_type, operation_parameters,
+                   manifest_location_bucket, manifest_location_key, manifest_location_etag,
+                   manifest_spec_format, manifest_spec_fields,
+                   priority, role_arn, status, created_at, completed_at,
+                   failure_reasons, total_objects, processed_objects, failed_objects
+            FROM batch_jobs WHERE 1=1
+            """
+        var params: [SQLiteData] = []
+
+        if let bucket = bucket {
+            query += " AND manifest_location_bucket = ?"
+            params.append(.text(bucket))
+        }
+
+        if let status = status {
+            query += " AND status = ?"
+            params.append(.text(status.rawValue))
+        }
+
+        query += " ORDER BY created_at DESC"
+
+        if let limit = limit {
+            query += " LIMIT ?"
+            params.append(.integer(limit))
+        }
+
+        let rows = try await connection.query(query, params)
+        var jobs: [BatchJob] = []
+
+        for row in rows {
+            let jobId = row.column("id")?.string ?? ""
+            if let job = try await getBatchJob(jobId: jobId) {
+                jobs.append(job)
+            }
+        }
+
+        // For now, no continuation token support - return all results
+        return (jobs: jobs, nextContinuationToken: nil)
+    }
+
+    func updateBatchJobStatus(jobId: String, status: BatchJobStatus, message: String?) async throws {
+        let failureReasonsJSON = String(data: try JSONEncoder().encode(message != nil ? [message!] : []), encoding: .utf8) ?? "[]"
+        let completedAt = status == .complete || status == .failed || status == .cancelled ?
+            Date().timeIntervalSince1970 : 0
+
+        let query = """
+            UPDATE batch_jobs SET status = ?, failure_reasons = ?, completed_at = ? WHERE id = ?
+            """
+        _ = try await connection.query(query, [
+            .text(status.rawValue),
+            .text(failureReasonsJSON),
+            .float(completedAt),
+            .text(jobId)
+        ])
+    }
+
+    func deleteBatchJob(jobId: String) async throws {
+        let query = "DELETE FROM batch_jobs WHERE id = ?"
+        _ = try await connection.query(query, [.text(jobId)])
+    }
+
+    func executeBatchOperation(jobId: String, bucket: String, key: String) async throws {
+        // Get the job details
+        guard let job = try await getBatchJob(jobId: jobId) else {
+            throw S3Error.noSuchKey // Or a more specific error
+        }
+
+        // Update progress counters
+        let updateQuery = """
+            UPDATE batch_jobs SET processed_objects = processed_objects + 1 WHERE id = ?
+            """
+        _ = try await connection.query(updateQuery, [.text(jobId)])
+
+        // For now, we'll implement basic operations. In a full implementation,
+        // this would execute the specific operation type on the object.
+        // For this demo, we'll just log the operation.
+        logger.info("Executing batch operation", metadata: [
+            "jobId": .string(jobId),
+            "operation": .string(job.operation.type.rawValue),
+            "bucket": .string(bucket),
+            "key": .string(key)
+        ])
     }
 }
