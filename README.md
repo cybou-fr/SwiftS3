@@ -21,6 +21,15 @@ SwiftS3 is a lightweight, S3-compatible object storage server written in Swift. 
 - **Lifecycle Management**: Periodical expiration of old objects based on bucket rules.
 - **Extensible Storage**: Modular architecture allowing for different storage backends and metadata stores.
 
+### Enterprise Features
+
+- **Server-Side Encryption (SSE-KMS)**: AES256 and AWS KMS-compatible encryption for data at rest.
+- **VPC-Only Access**: Restrict bucket access to specific IP ranges for enhanced security.
+- **Advanced Auditing**: Comprehensive audit logging with compliance reporting and security monitoring.
+- **Event Notifications**: S3-compatible event notifications for object operations.
+- **Cross-Region Replication**: Automatic replication of objects across multiple regions.
+- **Object Lock**: WORM (Write Once Read Many) compliance with retention periods and legal holds.
+
 ## Architecture
 
 SwiftS3 follows a modular architecture:
@@ -51,8 +60,204 @@ SwiftS3 follows a modular architecture:
     - **Put Policy**: `PUT /:bucket?policy`
     - **Get Policy**: `GET /:bucket?policy`
     - **Delete Policy**: `DELETE /:bucket?policy`
+- **Bucket Encryption**:
+    - **Put Encryption**: `PUT /:bucket?encryption`
+    - **Get Encryption**: `GET /:bucket?encryption`
+- **Bucket Replication**:
+    - **Put Replication**: `PUT /:bucket?replication`
+    - **Get Replication**: `GET /:bucket?replication`
+    - **Delete Replication**: `DELETE /:bucket?replication`
+- **Bucket Notifications**:
+    - **Put Notification**: `PUT /:bucket?notification`
+    - **Get Notification**: `GET /:bucket?notification`
+- **Bucket VPC Configuration**:
+    - **Put VPC Config**: `PUT /:bucket?vpc`
+    - **Delete VPC Config**: `DELETE /:bucket?vpc`
+- **Bucket Object Lock**:
+    - **Put Object Lock**: `PUT /:bucket?object-lock`
+    - **Get Object Lock**: `GET /:bucket?object-lock`
 
-### Objects
+### Audit & Compliance
+- **Get Audit Events**: `GET /audit` or `GET /:bucket/audit`
+    - Supports filtering by principal, event type, date range, and pagination.
+- **Delete Audit Events**: `DELETE /audit`
+    - Bulk cleanup of audit logs older than specified date.
+
+## Enterprise Features
+
+### Server-Side Encryption (SSE)
+
+SwiftS3 supports server-side encryption with AES256 and AWS KMS-compatible encryption:
+
+```bash
+# Configure bucket encryption
+aws s3api put-bucket-encryption \
+  --bucket mybucket \
+  --server-side-encryption-configuration '{
+    "Rules": [
+      {
+        "ApplyServerSideEncryptionByDefault": {
+          "SSEAlgorithm": "AES256"
+        }
+      }
+    ]
+  }' \
+  --endpoint-url http://localhost:8080
+```
+
+### VPC-Only Access
+
+Restrict bucket access to specific IP ranges for enhanced security:
+
+```bash
+# Configure VPC access for a bucket
+curl -X PUT "http://localhost:8080/mybucket?vpc" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "VpcId": "vpc-12345",
+    "AllowedIpRanges": ["10.0.0.0/8", "192.168.1.0/24"]
+  }'
+```
+
+### Advanced Auditing
+
+Comprehensive audit logging for compliance and security monitoring:
+
+```bash
+# Get audit events for a bucket
+curl "http://localhost:8080/mybucket/audit?maxItems=50" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+# Get global audit events
+curl "http://localhost:8080/audit?eventType=AccessDenied&startDate=2024-01-01T00:00:00Z" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..."
+```
+
+### Event Notifications
+
+Configure S3-compatible event notifications:
+
+```bash
+# Configure bucket notifications
+aws s3api put-bucket-notification-configuration \
+  --bucket mybucket \
+  --notification-configuration '{
+    "TopicConfigurations": [
+      {
+        "Id": "notification-1",
+        "TopicArn": "arn:aws:sns:us-east-1:123456789012:my-topic",
+        "Events": ["s3:ObjectCreated:*"],
+        "Filter": {
+          "Key": {
+            "FilterRules": [
+              {
+                "Name": "prefix",
+                "Value": "logs/"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }' \
+  --endpoint-url http://localhost:8080
+```
+
+### Cross-Region Replication
+
+Configure automatic replication across regions:
+
+```bash
+# Configure replication
+aws s3api put-bucket-replication \
+  --bucket source-bucket \
+  --replication-configuration '{
+    "Role": "arn:aws:iam::123456789012:role/replication-role",
+    "Rules": [
+      {
+        "ID": "rule1",
+        "Status": "Enabled",
+        "Prefix": "documents/",
+        "Destination": {
+          "Bucket": "arn:aws:s3:::destination-bucket"
+        }
+      }
+    ]
+  }' \
+  --endpoint-url http://localhost:8080
+```
+
+### Object Lock
+
+Implement WORM (Write Once Read Many) compliance:
+
+```bash
+# Enable object lock on bucket
+aws s3api put-object-lock-configuration \
+  --bucket mybucket \
+  --object-lock-configuration '{
+    "ObjectLockEnabled": "Enabled",
+    "Rule": {
+      "DefaultRetention": {
+        "Mode": "COMPLIANCE",
+        "Days": 365
+      }
+    }
+  }' \
+  --endpoint-url http://localhost:8080
+
+# Put object lock on specific object
+aws s3api put-object-lock \
+  --bucket mybucket \
+  --key important-document.pdf \
+  --lock-mode COMPLIANCE \
+  --lock-retain-until-date 2025-01-01T00:00:00Z \
+  --endpoint-url http://localhost:8080
+```
+
+## API Endpoints
+
+### Buckets
+- **List Buckets**: `GET /`
+- **Create Bucket**: `PUT /:bucket`
+- **Delete Bucket**: `DELETE /:bucket`
+- **List Objects**: `GET /:bucket`
+    - Supports V1 and V2 (`list-type=2`).
+    - Supports `prefix`, `delimiter`, `marker`, and `max-keys` query parameters.
+- **List Object Versions**: `GET /:bucket?versions`
+- **Bucket ACL**:
+    - **Get ACL**: `GET /:bucket?acl`
+    - **Put ACL**: `PUT /:bucket?acl`
+- **Bucket Versioning**:
+    - **Get Versioning**: `GET /:bucket?versioning`
+    - **Put Versioning**: `PUT /:bucket?versioning`
+- **Bucket Policy**:
+    - **Put Policy**: `PUT /:bucket?policy`
+    - **Get Policy**: `GET /:bucket?policy`
+    - **Delete Policy**: `DELETE /:bucket?policy`
+- **Bucket Encryption**:
+    - **Put Encryption**: `PUT /:bucket?encryption`
+    - **Get Encryption**: `GET /:bucket?encryption`
+- **Bucket Replication**:
+    - **Put Replication**: `PUT /:bucket?replication`
+    - **Get Replication**: `GET /:bucket?replication`
+    - **Delete Replication**: `DELETE /:bucket?replication`
+- **Bucket Notifications**:
+    - **Put Notification**: `PUT /:bucket?notification`
+    - **Get Notification**: `GET /:bucket?notification`
+- **Bucket VPC Configuration**:
+    - **Put VPC Config**: `PUT /:bucket?vpc`
+    - **Delete VPC Config**: `DELETE /:bucket?vpc`
+- **Bucket Object Lock**:
+    - **Put Object Lock**: `PUT /:bucket?object-lock`
+    - **Get Object Lock**: `GET /:bucket?object-lock`
+
+### Audit & Compliance
+- **Get Audit Events**: `GET /audit` or `GET /:bucket/audit`
+    - Supports filtering by principal, event type, date range, and pagination.
+- **Delete Audit Events**: `DELETE /audit`
+    - Bulk cleanup of audit logs older than specified date.
 - **Put Object**: `PUT /:bucket/:key`
     - Supports `x-amz-meta-*` headers for custom metadata.
     - Supports `Content-Type` persistence.
@@ -229,6 +434,17 @@ The test suite covers:
 - Performance benchmarks
 - Concurrent operation testing
 - Error path testing
+- Enterprise feature testing (SSE, VPC, Auditing, Event Notifications, Replication)
+
+### Test Coverage
+
+- **Core S3 Operations**: Bucket and object CRUD operations
+- **Authentication & Authorization**: AWS Signature V4, policies, ACLs
+- **Versioning & Lifecycle**: Object versioning, expiration rules
+- **Enterprise Features**: Server-side encryption, VPC access control, audit logging, event notifications, replication, object lock
+- **Storage Backends**: File system and SQLite metadata store implementations
+- **Error Handling**: Comprehensive error path testing
+- **Performance**: Concurrent operations and benchmark testing
 
 ## Development
 
