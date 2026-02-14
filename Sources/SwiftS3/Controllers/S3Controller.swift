@@ -353,7 +353,13 @@ struct S3Controller {
             bucket: bucket, action: "s3:PutBucketPolicy", request: request, context: context)
 
         let buffer = try await request.body.collect(upTo: 1024 * 1024)  // 1MB limit for policy documents (AWS S3 limit)
-        let policy = try JSONDecoder().decode(BucketPolicy.self, from: buffer)
+        
+        let policy: BucketPolicy
+        do {
+            policy = try JSONDecoder().decode(BucketPolicy.self, from: buffer)
+        } catch {
+            throw S3Error.malformedPolicy
+        }
 
         try await storage.putBucketPolicy(bucket: bucket, policy: policy)
         logger.info("Bucket policy updated", metadata: ["bucket": "\(bucket)"])
@@ -540,6 +546,11 @@ struct S3Controller {
         -> Response
     {
         let (bucket, key) = try parsePath(request.uri.path)
+
+        // Validate key length (S3 limit is 1024 bytes)
+        guard key.utf8.count <= 1024 else {
+            throw S3Error.invalidArgument
+        }
 
         // Check if this is an ACL operation
         if request.uri.queryParameters.get("acl") != nil {
@@ -1104,10 +1115,12 @@ struct S3Controller {
                         bucket: bucket, key: nil, versionId: nil as String?, action: action,
                         principal: principal)
                 }
-                // For GetObject, if it doesn't exist, we usually throw NoSuchKey later, but here we can return false (Deny)
-                // causing AccessDenied which might mask NoSuchKey.
-                // AWS usually returns 404 if you have ListBucket permission, 403 otherwise.
-                // For now, let's treat missing ACL as Deny.
+                // For GetObject/HeadObject, if object doesn't exist, allow the operation to proceed
+                // so that NoSuchKey (404) can be returned instead of AccessDenied (403)
+                if action == "s3:GetObject" || action == "s3:HeadObject" {
+                    throw s3Err  // Re-throw NoSuchKey to be handled as 404
+                }
+                // For other actions on non-existent objects, deny access
                 return false
             }
             // For Bucket operations, NoSuchBucket -> existing logic handles it (not reachable usually)
@@ -1452,7 +1465,14 @@ struct S3Controller {
             bucket: bucket, action: "s3:PutLifecycleConfiguration", request: request,
             context: context)
         let buffer = try await request.body.collect(upTo: 1024 * 1024)
-        let config = XML.parseLifecycle(xml: String(buffer: buffer))
+        let xmlString = String(buffer: buffer)
+        
+        // Basic validation - check for proper XML structure
+        guard xmlString.contains("<LifecycleConfiguration>") || xmlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw S3Error.invalidArgument
+        }
+        
+        let config = XML.parseLifecycle(xml: xmlString)
         try await storage.putBucketLifecycle(bucket: bucket, configuration: config)
         return Response(status: .ok)
     }
