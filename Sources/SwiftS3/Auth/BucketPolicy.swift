@@ -5,6 +5,11 @@ public struct BucketPolicy: Codable, Sendable {
     public let Id: String?
     public let Statement: [PolicyStatement]
 
+    /// Initializes a new bucket policy
+    /// - Parameters:
+    ///   - Version: Policy version (defaults to "2012-10-17")
+    ///   - Id: Optional policy ID
+    ///   - Statement: Array of policy statements defining permissions
     public init(Version: String = "2012-10-17", Id: String? = nil, Statement: [PolicyStatement]) {
         self.Version = Version
         self.Id = Id
@@ -19,6 +24,13 @@ public struct PolicyStatement: Codable, Sendable {
     public let Action: SingleOrArray<String>
     public let Resource: SingleOrArray<String>
 
+    /// Initializes a new policy statement
+    /// - Parameters:
+    ///   - Sid: Optional statement ID for identification
+    ///   - Effect: Allow or Deny effect for the statement
+    ///   - Principal: The principal(s) this statement applies to
+    ///   - Action: The action(s) being allowed or denied
+    ///   - Resource: The resource(s) this statement applies to
     public init(
         Sid: String? = nil, Effect: StatementEffect, Principal: PolicyPrincipal,
         Action: SingleOrArray<String>, Resource: SingleOrArray<String>
@@ -53,7 +65,7 @@ public enum PolicyPrincipal: Codable, Sendable {
             self = .specific(dict)
             return
         }
-        if let dict = try? container.decode([String: [String]].self) {
+        if let _ = try? container.decode([String: [String]].self) {
             // Handle array of principals case if needed, mapping to specific
             // For now simplified to single string map or *
             // Actually AWS Principal can be slightly complex: {"AWS": ["arn1", "arn2"]}

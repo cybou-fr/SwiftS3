@@ -749,7 +749,7 @@ struct S3Controller {
             metadata: ["bucket": "\(bucket)", "key": "\(key)", "etag": "\(etag)"])
 
         // Publish event notification
-        try await storage.publishEvent(bucket: bucket, event: .objectCreatedPut, key: key, metadata: metadataResult)
+        try await storage.publishEvent(bucket: bucket, event: .objectCreatedPut, key: key, metadata: metadataResult, userIdentity: context.principal, sourceIPAddress: nil)
 
         return Response(status: .ok, headers: headers)
     }
@@ -841,9 +841,9 @@ struct S3Controller {
                 buffer.writeBuffer(&chunk)
             }
             let xmlStr = String(buffer: buffer)
-            let keys = XML.parseDeleteObjects(xml: xmlStr)
+            let objects = XML.parseDeleteObjects(xml: xmlStr)
 
-            let deleted = try await storage.deleteObjects(bucket: bucket, keys: keys)
+            let deleted = try await storage.deleteObjects(bucket: bucket, objects: objects)
             let resultXml = XML.deleteResult(deleted: deleted, errors: [])
 
             return Response(
@@ -1087,7 +1087,7 @@ struct S3Controller {
         logger.info("Object deleted", metadata: ["bucket": "\(bucket)", "key": "\(key)"])
 
         // Publish event notification
-        try await storage.publishEvent(bucket: bucket, event: .objectRemovedDelete, key: key, metadata: nil)
+        try await storage.publishEvent(bucket: bucket, event: .objectRemovedDelete, key: key, metadata: nil, userIdentity: context.principal, sourceIPAddress: nil)
 
         var headers: HTTPFields = [:]
         if let vid = result.versionId, vid != "null" {
@@ -1359,11 +1359,18 @@ struct S3Controller {
             return Response(status: .ok)
         }
 
-        // TODO: Support XML Body ACLs
-        // For now, if no header method, return NotImplemented or ignore
-        // Standard S3 allows body.
-        logger.warning("XML Body ACLs not yet supported. Use x-amz-acl header.")
-        throw S3Error.notImplemented
+        // Support XML Body ACLs
+        let buffer = try await request.body.collect(upTo: 1024 * 1024)  // 1MB limit for ACL documents
+        if buffer.readableBytes > 0 {
+            let xmlString = String(buffer: buffer)
+            let acl = XML.parseAccessControlPolicy(xml: xmlString)
+            try await storage.putACL(bucket: bucket, key: nil, versionId: nil as String?, acl: acl)
+            return Response(status: .ok)
+        }
+
+        // If no header method and no body, return error
+        logger.warning("No ACL specified. Use x-amz-acl header or XML body.")
+        throw S3Error.invalidArgument
     }
 
     /// Retrieves the Access Control List for the specified object.
@@ -1410,8 +1417,19 @@ struct S3Controller {
             return Response(status: .ok)
         }
 
-        logger.warning("XML Body ACLs not yet supported. Use x-amz-acl header.")
-        throw S3Error.notImplemented
+        // Support XML Body ACLs
+        let buffer = try await request.body.collect(upTo: 1024 * 1024)  // 1MB limit for ACL documents
+        if buffer.readableBytes > 0 {
+            let xmlString = String(buffer: buffer)
+            let acl = XML.parseAccessControlPolicy(xml: xmlString)
+            try await storage.putACL(
+                bucket: bucket, key: key, versionId: query["versionId"], acl: acl)
+            return Response(status: .ok)
+        }
+
+        // If no header method and no body, return error
+        logger.warning("No ACL specified. Use x-amz-acl header or XML body.")
+        throw S3Error.invalidArgument
     }
 
     private func parseCannedACL(headers: HTTPFields, ownerID: String) -> AccessControlPolicy? {

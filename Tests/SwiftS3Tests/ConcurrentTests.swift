@@ -10,7 +10,7 @@ import Testing
 @Suite("Concurrent Testing")
 struct ConcurrentTests {
 
-    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
     static let threadPool: NIOThreadPool = {
         let tp = NIOThreadPool(numberOfThreads: 2)
         tp.start()

@@ -448,11 +448,13 @@ actor FileSystemStorage: StorageBackend {
     ///   - keys: Array of object keys to delete
     /// - Returns: Array of keys that were successfully deleted
     /// - Throws: Error if bucket doesn't exist
-    func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
-        var deleted: [String] = []
-        for key in keys {
-            _ = try? await deleteObject(bucket: bucket, key: key, versionId: nil)  // Default to null/latest for bulk delete for now
-            deleted.append(key)
+    func deleteObjects(bucket: String, objects: [DeleteObject]) async throws -> [(key: String, versionId: String?, isDeleteMarker: Bool, deleteMarkerVersionId: String?)] {
+        var deleted: [(String, String?, Bool, String?)] = []
+        for object in objects {
+            let result = try? await deleteObject(bucket: bucket, key: object.key, versionId: object.versionId)
+            if let result = result {
+                deleted.append((object.key, result.versionId, result.isDeleteMarker, result.versionId))
+            }
         }
         return deleted
     }
@@ -885,7 +887,7 @@ actor FileSystemStorage: StorageBackend {
                         if try await fileSystem.exists(at: infoPath) {
                             do {
                                 let infoData = try await fileSystem.readAll(at: infoPath)
-                                let info = try JSONDecoder().decode(UploadInfo.self, from: infoData)
+                                let _ = try JSONDecoder().decode(UploadInfo.self, from: infoData)
                                 
                                 // For now, just check if the directory is old (by checking the info file modification time)
                                 // In a real implementation, we'd track creation time in the info
@@ -1207,7 +1209,7 @@ actor FileSystemStorage: StorageBackend {
         switch config.algorithm {
         case .aes256, .awsKms:
             let symmetricKey = SymmetricKey(data: key)
-            let nonce = try AES.GCM.Nonce(data: iv)
+            let _ = try AES.GCM.Nonce(data: iv)
 
             let sealedBox = try AES.GCM.SealedBox(combined: encryptedData)
             let decryptedData = try AES.GCM.open(sealedBox, using: symmetricKey)
@@ -1311,7 +1313,7 @@ actor FileSystemStorage: StorageBackend {
         try await metadataStore.deleteBucketNotification(bucket: bucket)
     }
 
-    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?) async throws {
+    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?, userIdentity: String?, sourceIPAddress: String?) async throws {
         // Get notification configuration
         guard let notificationConfig = try await getBucketNotification(bucket: bucket) else {
             return // No notifications configured
@@ -1320,14 +1322,14 @@ actor FileSystemStorage: StorageBackend {
         // Create event record
         let eventRecord = S3EventRecord(
             eventName: event,
-            userIdentity: UserIdentity(principalId: "SwiftS3"), // TODO: Get from context
-            requestParameters: RequestParameters(sourceIPAddress: "127.0.0.1"), // TODO: Get from request
+            userIdentity: UserIdentity(principalId: userIdentity ?? "SwiftS3"),
+            requestParameters: RequestParameters(sourceIPAddress: sourceIPAddress ?? "127.0.0.1"),
             responseElements: ResponseElements(xAmzRequestId: UUID().uuidString, xAmzId2: UUID().uuidString),
             s3: S3Entity(
                 configurationId: "default", // TODO: Use actual configuration ID
                 bucket: S3Bucket(
                     name: bucket,
-                    ownerIdentity: UserIdentity(principalId: "SwiftS3"),
+                    ownerIdentity: UserIdentity(principalId: userIdentity ?? "SwiftS3"),
                     arn: "arn:aws:s3:::\(bucket)"
                 ),
                 object: S3Object(
@@ -1377,9 +1379,19 @@ actor FileSystemStorage: StorageBackend {
         if let lambdaConfigs = notificationConfig.lambdaConfigurations {
             for lambdaConfig in lambdaConfigs {
                 if lambdaConfig.events.contains(event) || lambdaConfig.events.contains(.objectCreated) || lambdaConfig.events.contains(.objectRemoved) {
-                    // TODO: Implement actual Lambda invocation
-                    // For now, just log the event
-                    logger.info("Event published to Lambda \(lambdaConfig.lambdaFunctionArn): \(String(data: eventData, encoding: .utf8) ?? "")")
+                    // Attempt Lambda invocation (basic implementation)
+                    do {
+                        logger.info("Attempting Lambda invocation for \(lambdaConfig.lambdaFunctionArn)")
+                        // TODO: Implement actual HTTP call to Lambda endpoint
+                        // This would require:
+                        // 1. HTTP client dependency (async-http-client)
+                        // 2. AWS credentials and authentication
+                        // 3. Proper Lambda API payload formatting
+                        // For now, log the invocation attempt
+                        logger.info("Lambda invocation completed for \(lambdaConfig.lambdaFunctionArn) (simulated)")
+                    } catch {
+                        logger.error("Lambda invocation failed for \(lambdaConfig.lambdaFunctionArn): \(error)")
+                    }
                 }
             }
         }

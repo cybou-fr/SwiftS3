@@ -705,7 +705,7 @@ protocol StorageBackend: Sendable {
         versionId: String?, isDeleteMarker: Bool
     )
     /// Deletes multiple objects from the specified bucket.
-    func deleteObjects(bucket: String, keys: [String]) async throws -> [String]  // TODO: Support versioned bulk delete
+    func deleteObjects(bucket: String, objects: [DeleteObject]) async throws -> [(key: String, versionId: String?, isDeleteMarker: Bool, deleteMarkerVersionId: String?)]
     /// Retrieves metadata for an object without its body.
     func getObjectMetadata(bucket: String, key: String, versionId: String?) async throws
         -> ObjectMetadata
@@ -822,7 +822,7 @@ protocol StorageBackend: Sendable {
     /// Deletes the notification configuration for a bucket.
     func deleteBucketNotification(bucket: String) async throws
     /// Publishes an event notification for the specified bucket and event.
-    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?) async throws
+    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?, userIdentity: String?, sourceIPAddress: String?) async throws
 
     // VPC-Only Access
     /// Configures VPC-only access for a bucket.

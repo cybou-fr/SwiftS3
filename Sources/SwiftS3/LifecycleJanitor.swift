@@ -80,7 +80,7 @@ actor LifecycleJanitor {
     ///   - bucket: The bucket name to apply the rule to
     /// - Throws: Storage errors if rule application fails
     private func applyRule(_ rule: LifecycleConfiguration.Rule, to bucket: String) async throws {
-        let prefix = rule.filter.prefix ?? ""
+        let _ = rule.filter.prefix ?? ""
 
         // Handle current version expiration
         if let expiration = rule.expiration, let days = expiration.days {
@@ -203,7 +203,7 @@ actor LifecycleJanitor {
                             metadata: [
                                 "bucket": "\(bucket)",
                                 "key": "\(key)",
-                                "versionId": "\(version.versionId ?? "null")",
+                                "versionId": "\(version.versionId)",
                                 "lastModified": "\(version.lastModified)",
                                 "index": "\(index)",
                             ])

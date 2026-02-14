@@ -923,15 +923,40 @@ struct SwiftS3Tests {
             </Object>
         </Delete>
         """
-        let keys = XML.parseDeleteObjects(xml: xml)
-        #expect(keys == ["file1.txt", "file2.txt"])
+        let objects = XML.parseDeleteObjects(xml: xml)
+        #expect(objects == [DeleteObject(key: "file1.txt", versionId: nil), DeleteObject(key: "file2.txt", versionId: nil)])
     }
 
     @Test("XML: Parse Delete Objects - Empty")
     func testParseDeleteObjectsEmpty() {
         let xml = "<Delete></Delete>"
-        let keys = XML.parseDeleteObjects(xml: xml)
-        #expect(keys.isEmpty)
+        let objects = XML.parseDeleteObjects(xml: xml)
+        #expect(objects.isEmpty)
+    }
+
+    @Test("XML: Parse Delete Objects - With Versions")
+    func testParseDeleteObjectsWithVersions() {
+        let xml = """
+        <Delete>
+            <Object>
+                <Key>file1.txt</Key>
+                <VersionId>v1.0</VersionId>
+            </Object>
+            <Object>
+                <Key>file2.txt</Key>
+            </Object>
+            <Object>
+                <Key>file3.txt</Key>
+                <VersionId>v2.1</VersionId>
+            </Object>
+        </Delete>
+        """
+        let objects = XML.parseDeleteObjects(xml: xml)
+        #expect(objects == [
+            DeleteObject(key: "file1.txt", versionId: "v1.0"),
+            DeleteObject(key: "file2.txt", versionId: nil),
+            DeleteObject(key: "file3.txt", versionId: "v2.1")
+        ])
     }
 
     @Test("XML: Parse Complete Multipart Upload")
@@ -992,8 +1017,8 @@ struct SwiftS3Tests {
 
             try await app.execute(uri: "/policy-error-bucket?policy", method: .put, headers: policyHeaders,
                                 body: ByteBuffer(string: invalidPolicy)) { response in
-                // Should handle JSON parsing errors gracefully (currently returns 500)
-                #expect(response.status == .internalServerError)
+                // Should handle JSON parsing errors gracefully with 400 Bad Request
+                #expect(response.status == .badRequest)
             }
         }
     }
@@ -1047,8 +1072,8 @@ struct SwiftS3Tests {
 
         for xml in testCases {
             // Should not crash - fuzzing tests edge cases and malformed input
-            let keys = XML.parseDeleteObjects(xml: xml)
-            #expect(keys.count >= 0)  // Should return a valid array
+            let objects = XML.parseDeleteObjects(xml: xml)
+            #expect(objects.count >= 0)  // Should return a valid array
             // Note: Empty keys are allowed in malformed input, we just test for no crashes
         }
     }

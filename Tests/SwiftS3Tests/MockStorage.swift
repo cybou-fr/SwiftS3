@@ -191,12 +191,12 @@ class MockStorage: @unchecked Sendable, StorageBackend {
         return (versionId: "null", isDeleteMarker: false)
     }
 
-    func deleteObjects(bucket: String, keys: [String]) async throws -> [String] {
-        var results: [String] = []
-        for key in keys {
+    func deleteObjects(bucket: String, objects: [DeleteObject]) async throws -> [(key: String, versionId: String?, isDeleteMarker: Bool, deleteMarkerVersionId: String?)] {
+        var results: [(String, String?, Bool, String?)] = []
+        for object in objects {
             do {
-                try await deleteObject(bucket: bucket, key: key, versionId: nil)
-                results.append(key)
+                let result = try await deleteObject(bucket: bucket, key: object.key, versionId: object.versionId)
+                results.append((object.key, result.versionId, result.isDeleteMarker, result.versionId))
             } catch {
                 // Key not found, still include in results
             }
@@ -694,7 +694,7 @@ class MockStorage: @unchecked Sendable, StorageBackend {
         // Mock implementation - do nothing
     }
 
-    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?) async throws {
+    func publishEvent(bucket: String, event: S3EventType, key: String?, metadata: ObjectMetadata?, userIdentity: String?, sourceIPAddress: String?) async throws {
         // Mock implementation - do nothing
     }
 

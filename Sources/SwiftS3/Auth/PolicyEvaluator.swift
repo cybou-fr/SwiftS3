@@ -130,6 +130,11 @@ public struct PolicyRequest: Sendable {
     public let action: String  // e.g. "s3:GetObject"
     public let resource: String  // e.g. "arn:aws:s3:::mybucket/myobject"
 
+    /// Initializes a policy evaluation request
+    /// - Parameters:
+    ///   - principal: The principal making the request (ARN or access key)
+    ///   - action: The action being requested (e.g., "s3:GetObject")
+    ///   - resource: The resource being accessed (e.g., bucket/object ARN)
     public init(principal: String?, action: String, resource: String) {
         self.principal = principal
         self.action = action

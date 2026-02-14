@@ -70,7 +70,7 @@ final class XMLTests: XCTestCase {
     }
 
     func testDeleteResult() {
-        let xml = XML.deleteResult(deleted: ["key1"], errors: [("key2", "code", "message")])
+        let xml = XML.deleteResult(deleted: [("key1", nil, false, nil)], errors: [("key2", "code", "message")])
         XCTAssert(xml.contains("<Deleted>"))
         XCTAssert(xml.contains("<Error>"))
     }
@@ -82,8 +82,8 @@ final class XMLTests: XCTestCase {
             <Object><Key>key2</Key></Object>
         </Delete>
         """
-        let keys = XML.parseDeleteObjects(xml: xml)
-        XCTAssertEqual(keys, ["key1", "key2"])
+        let objects = XML.parseDeleteObjects(xml: xml)
+        XCTAssertEqual(objects, [DeleteObject(key: "key1", versionId: nil), DeleteObject(key: "key2", versionId: nil)])
     }
 
     func testAccessControlPolicy() {

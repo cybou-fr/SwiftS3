@@ -514,7 +514,9 @@ final class EnterpriseFeaturesTests: XCTestCase {
             bucket: "test-bucket",
             event: .objectCreatedPut,
             key: "event-test.txt",
-            metadata: metadata
+            metadata: metadata,
+            userIdentity: "test-user",
+            sourceIPAddress: "127.0.0.1"
         )
 
         // Verify notification configuration still exists

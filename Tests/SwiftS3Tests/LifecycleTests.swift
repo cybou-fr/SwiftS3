@@ -1,15 +1,72 @@
+import Crypto
 import Foundation
 import HTTPTypes
 import Hummingbird
 import HummingbirdTesting
-import Logging
 import NIO
+import SQLiteNIO
 import Testing
 
 @testable import SwiftS3
 
 @Suite("Lifecycle Integration Tests")
 struct LifecycleIntegrationTests {
+
+    static let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    static let threadPool: NIOThreadPool = {
+        let tp = NIOThreadPool(numberOfThreads: 2)
+        tp.start()
+        return tp
+    }()
+
+    func withApp(
+        users: [(accessKey: String, secretKey: String)] = [],
+        _ test: @escaping @Sendable (any TestClientProtocol, SQLMetadataStore) async throws -> Void
+    ) async throws {
+        let storagePath = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString
+        ).path
+        let server = S3Server(
+            hostname: "127.0.0.1", port: 0, storagePath: storagePath, accessKey: "admin",
+            secretKey: "password", ldapConfig: nil)
+
+        try? FileManager.default.createDirectory(
+            atPath: storagePath, withIntermediateDirectories: true)
+
+        let metadataStore = try await SQLMetadataStore.create(
+            path: storagePath + "/metadata.sqlite",
+            on: Self.elg,
+            threadPool: Self.threadPool
+        )
+
+        // Seed users
+        for user in users {
+            try await metadataStore.createUser(
+                username: "User-\(user.accessKey)", accessKey: user.accessKey,
+                secretKey: user.secretKey)
+        }
+
+        let storage = FileSystemStorage(rootPath: storagePath, metadataStore: metadataStore)
+        let controller = S3Controller(storage: storage)
+
+        let router = Router(context: S3RequestContext.self)
+        router.middlewares.add(S3ErrorMiddleware())
+        router.middlewares.add(S3Authenticator(userStore: metadataStore))
+        controller.addRoutes(to: router)
+
+        let app = Application(
+            router: router,
+            configuration: .init(address: .hostname(server.hostname, port: server.port)),
+            eventLoopGroupProvider: .shared(Self.elg)
+        )
+
+        try await app.test(.router) { client in
+            try await test(client, metadataStore)
+        }
+
+        try? await metadataStore.shutdown()
+        try? FileManager.default.removeItem(atPath: storagePath)
+    }
 
     func sign(
         _ method: String, _ path: String, key: String = "admin", secret: String = "password",
@@ -38,7 +95,7 @@ struct LifecycleIntegrationTests {
 
             // 2. Put Lifecycle
             let lifecycleXML = """
-                <LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <LifecycleConfiguration>
                     <Rule>
                         <ID>id1</ID>
                         <Filter>

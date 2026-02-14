@@ -1,5 +1,11 @@
 import Foundation
 
+/// Represents an object to be deleted in a bulk delete operation
+struct DeleteObject: Equatable {
+    let key: String
+    let versionId: String?
+}
+
 /// Utility struct for generating XML responses compatible with AWS S3 API.
 /// Provides static methods for creating XML documents for various S3 operations.
 /// All methods return properly formatted XML strings that match AWS S3 response formats.
@@ -233,6 +239,7 @@ struct XML {
             }
         }
 
+        return parts
     }
 
     /// Generates XML response for bulk delete operations
@@ -241,16 +248,27 @@ struct XML {
     ///   - errors: Array of tuples containing error details (key, code, message) for failed deletions
     /// - Returns: XML string formatted according to S3 API specification for delete results
     static func deleteResult(
-        deleted: [String], errors: [(key: String, code: String, message: String)]
+        deleted: [(key: String, versionId: String?, isDeleteMarker: Bool, deleteMarkerVersionId: String?)],
+        errors: [(key: String, code: String, message: String)]
     ) -> String {
         return XMLBuilder(
             root: "DeleteResult",
             attributes: ["xmlns": "http://s3.amazonaws.com/doc/2006-03-01/"]
         ) {
             var xml = ""
-            xml += deleted.map { key in
+            xml += deleted.map { (key, versionId, isDeleteMarker, deleteMarkerVersionId) in
                 XMLBuilder.element("Deleted") {
-                    XMLBuilder.element("Key", key)
+                    var content = XMLBuilder.element("Key", key)
+                    if let versionId = versionId {
+                        content += XMLBuilder.element("VersionId", versionId)
+                    }
+                    if isDeleteMarker {
+                        content += XMLBuilder.element("DeleteMarker", "true")
+                        if let deleteMarkerVersionId = deleteMarkerVersionId {
+                            content += XMLBuilder.element("DeleteMarkerVersionId", deleteMarkerVersionId)
+                        }
+                    }
+                    return content
                 }
             }.joined()
 
@@ -265,32 +283,55 @@ struct XML {
         }.content
     }
 
-    /// Parses XML input for bulk delete operations to extract object keys
-    /// - Parameter xml: XML string containing delete request with object keys
-    /// - Returns: Array of object keys to be deleted
-    /// - Note: Uses regex to extract keys from <Key> elements within <Object> elements
+    /// Parses XML input for bulk delete operations to extract object keys and version IDs
+    /// - Parameter xml: XML string containing delete request with object keys and optional version IDs
+    /// - Returns: Array of DeleteObject instances containing key and optional version ID
+    /// - Note: Uses regex to extract keys and version IDs from <Object> elements within <Delete> elements
     // Helper to parse DeleteObjects request body
-    static func parseDeleteObjects(xml: String) -> [String] {
-        var keys: [String] = []
-        // Simple regex to find <Key>...</Key> inside <Delete>...<Object>...</Object>...</Delete>
-        // But the input XML structure is:
+    static func parseDeleteObjects(xml: String) -> [DeleteObject] {
+        var objects: [DeleteObject] = []
+        // Parse <Object> elements which may contain <Key> and optional <VersionId>
+        // Structure:
         // <Delete>
-        //   <Object><Key>key1</Key></Object>
+        //   <Object><Key>key1</Key><VersionId>version1</VersionId></Object>
         //   <Object><Key>key2</Key></Object>
         // </Delete>
 
-        let keyPattern = "<Key>(.*?)</Key>"
-        let keyRegex = try! NSRegularExpression(
-            pattern: keyPattern, options: [.dotMatchesLineSeparators])
+        let objectPattern = "<Object>(.*?)</Object>"
+        let objectRegex = try! NSRegularExpression(
+            pattern: objectPattern, options: [.dotMatchesLineSeparators, .caseInsensitive])
         let nsString = xml as NSString
-        let matches = keyRegex.matches(
+        let objectMatches = objectRegex.matches(
             in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
 
-        for match in matches {
-            let key = nsString.substring(with: match.range(at: 1))
-            keys.append(key)
+        for objectMatch in objectMatches {
+            let objectContent = nsString.substring(with: objectMatch.range(at: 1))
+
+            // Extract key
+            let keyPattern = "<Key>(.*?)</Key>"
+            let keyRegex = try! NSRegularExpression(
+                pattern: keyPattern, options: [.dotMatchesLineSeparators, .caseInsensitive])
+            let keyMatches = keyRegex.matches(
+                in: objectContent, options: [], range: NSRange(location: 0, length: (objectContent as NSString).length))
+
+            guard let keyMatch = keyMatches.first else { continue }
+            let key = (objectContent as NSString).substring(with: keyMatch.range(at: 1))
+
+            // Extract optional version ID
+            var versionId: String? = nil
+            let versionPattern = "<VersionId>(.*?)</VersionId>"
+            let versionRegex = try! NSRegularExpression(
+                pattern: versionPattern, options: [.dotMatchesLineSeparators, .caseInsensitive])
+            let versionMatches = versionRegex.matches(
+                in: objectContent, options: [], range: NSRange(location: 0, length: (objectContent as NSString).length))
+
+            if let versionMatch = versionMatches.first {
+                versionId = (objectContent as NSString).substring(with: versionMatch.range(at: 1))
+            }
+
+            objects.append(DeleteObject(key: key, versionId: versionId))
         }
-        return keys
+        return objects
     }
 
     /// Generates XML representation of an access control policy for S3 objects/buckets
@@ -347,6 +388,106 @@ struct XML {
             }
             return xml
         }.content
+    }
+
+    /// Parses XML Access Control Policy to extract owner and grants
+    /// - Parameter xml: XML string containing access control policy
+    /// - Returns: AccessControlPolicy object with parsed owner and grants
+    static func parseAccessControlPolicy(xml: String) -> AccessControlPolicy {
+        var owner: Owner?
+        var grants: [Grant] = []
+
+        // Parse owner
+        let ownerPattern = "<Owner>(.*?)</Owner>"
+        let ownerRegex = try! NSRegularExpression(pattern: ownerPattern, options: [.dotMatchesLineSeparators])
+        let ownerIdPattern = "<ID>(.*?)</ID>"
+        let ownerDisplayNamePattern = "<DisplayName>(.*?)</DisplayName>"
+        let ownerIdRegex = try! NSRegularExpression(pattern: ownerIdPattern, options: [])
+        let ownerDisplayNameRegex = try! NSRegularExpression(pattern: ownerDisplayNamePattern, options: [])
+
+        let nsString = xml as NSString
+        if let ownerMatch = ownerRegex.firstMatch(in: xml, options: [], range: NSRange(location: 0, length: nsString.length)) {
+            let ownerContent = nsString.substring(with: ownerMatch.range(at: 1))
+            let ownerNsString = ownerContent as NSString
+
+            var ownerId: String?
+            var ownerDisplayName: String?
+
+            if let idMatch = ownerIdRegex.firstMatch(in: ownerContent, options: [], range: NSRange(location: 0, length: ownerNsString.length)) {
+                ownerId = ownerNsString.substring(with: idMatch.range(at: 1))
+            }
+
+            if let nameMatch = ownerDisplayNameRegex.firstMatch(in: ownerContent, options: [], range: NSRange(location: 0, length: ownerNsString.length)) {
+                ownerDisplayName = ownerNsString.substring(with: nameMatch.range(at: 1))
+            }
+
+            if let ownerId = ownerId {
+                owner = Owner(id: ownerId, displayName: ownerDisplayName)
+            }
+        }
+
+        // Parse grants
+        let grantPattern = "<Grant>(.*?)</Grant>"
+        let grantRegex = try! NSRegularExpression(pattern: grantPattern, options: [.dotMatchesLineSeparators])
+        let granteePattern = "<Grantee[^>]*>(.*?)</Grantee>"
+        let granteeRegex = try! NSRegularExpression(pattern: granteePattern, options: [.dotMatchesLineSeparators])
+        let permissionPattern = "<Permission>(.*?)</Permission>"
+        let permissionRegex = try! NSRegularExpression(pattern: permissionPattern, options: [])
+
+        let grantMatches = grantRegex.matches(in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for grantMatch in grantMatches {
+            let grantContent = nsString.substring(with: grantMatch.range(at: 1))
+            let grantNsString = grantContent as NSString
+
+            // Parse grantee
+            var grantee: Grantee?
+            if let granteeMatch = granteeRegex.firstMatch(in: grantContent, options: [], range: NSRange(location: 0, length: grantNsString.length)) {
+                let granteeContent = grantNsString.substring(with: granteeMatch.range(at: 1))
+                let granteeNsString = granteeContent as NSString
+
+                var granteeId: String?
+                var granteeDisplayName: String?
+                var granteeType = "CanonicalUser"
+                var granteeUri: String?
+
+                // Check for xsi:type attribute
+                if grantContent.contains("xsi:type=\"Group\"") {
+                    granteeType = "Group"
+                }
+
+                if let idMatch = ownerIdRegex.firstMatch(in: granteeContent, options: [], range: NSRange(location: 0, length: granteeNsString.length)) {
+                    granteeId = granteeNsString.substring(with: idMatch.range(at: 1))
+                }
+
+                if let nameMatch = ownerDisplayNameRegex.firstMatch(in: granteeContent, options: [], range: NSRange(location: 0, length: granteeNsString.length)) {
+                    granteeDisplayName = granteeNsString.substring(with: nameMatch.range(at: 1))
+                }
+
+                let uriPattern = "<URI>(.*?)</URI>"
+                let uriRegex = try! NSRegularExpression(pattern: uriPattern, options: [])
+                if let uriMatch = uriRegex.firstMatch(in: granteeContent, options: [], range: NSRange(location: 0, length: granteeNsString.length)) {
+                    granteeUri = granteeNsString.substring(with: uriMatch.range(at: 1))
+                }
+
+                grantee = Grantee(id: granteeId, displayName: granteeDisplayName, type: granteeType, uri: granteeUri)
+            }
+
+            // Parse permission
+            var permission: Permission?
+            if let permissionMatch = permissionRegex.firstMatch(in: grantContent, options: [], range: NSRange(location: 0, length: grantNsString.length)) {
+                let permissionStr = grantNsString.substring(with: permissionMatch.range(at: 1))
+                permission = Permission(rawValue: permissionStr)
+            }
+
+            if let grantee = grantee, let permission = permission {
+                grants.append(Grant(grantee: grantee, permission: permission))
+            }
+        }
+
+        let finalOwner = owner ?? Owner(id: "anonymous")
+
+        return AccessControlPolicy(owner: finalOwner, accessControlList: grants)
     }
 
     /// Generates XML representation of bucket versioning configuration
@@ -847,14 +988,146 @@ struct XML {
         }
     }
 
-    /// Parses XML notification configuration (placeholder implementation)
+    /// Parses XML notification configuration
     /// - Parameter xml: XML string containing notification configuration
-    /// - Returns: NotificationConfiguration object (currently returns empty configuration)
-    /// - Note: TODO: Implement full XML parsing for notification configuration
+    /// - Returns: NotificationConfiguration object with parsed configurations
     static func parseNotification(xml: String) -> NotificationConfiguration {
-        // TODO: Implement full XML parsing for notification configuration
-        // For now, return empty configuration
-        return NotificationConfiguration()
+        var topicConfigurations: [TopicConfiguration] = []
+        var queueConfigurations: [QueueConfiguration] = []
+        var lambdaConfigurations: [LambdaConfiguration] = []
+
+        let nsString = xml as NSString
+
+        // Parse TopicConfigurations
+        let topicConfigPattern = "<TopicConfiguration>(.*?)</TopicConfiguration>"
+        let topicConfigRegex = try! NSRegularExpression(pattern: topicConfigPattern, options: [.dotMatchesLineSeparators])
+        let topicConfigMatches = topicConfigRegex.matches(in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for match in topicConfigMatches {
+            let configContent = nsString.substring(with: match.range(at: 1))
+            let configNsString = configContent as NSString
+
+            var id: String?
+            var topicArn: String?
+            var events: [S3EventType] = []
+            var filter: NotificationFilter?
+
+            // Parse ID
+            if let idMatch = try! NSRegularExpression(pattern: "<Id>(.*?)</Id>", options: []).firstMatch(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length)) {
+                id = configNsString.substring(with: idMatch.range(at: 1))
+            }
+
+            // Parse Topic ARN
+            if let topicMatch = try! NSRegularExpression(pattern: "<Topic>(.*?)</Topic>", options: []).firstMatch(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length)) {
+                topicArn = configNsString.substring(with: topicMatch.range(at: 1))
+            }
+
+            // Parse Events
+            let eventPattern = "<Event>(.*?)</Event>"
+            let eventRegex = try! NSRegularExpression(pattern: eventPattern, options: [])
+            let eventMatches = eventRegex.matches(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length))
+            for eventMatch in eventMatches {
+                let eventStr = configNsString.substring(with: eventMatch.range(at: 1))
+                if let event = S3EventType(rawValue: eventStr) {
+                    events.append(event)
+                }
+            }
+
+            // Parse Filter (simplified - would need full implementation)
+            if configContent.contains("<Filter>") {
+                // For now, skip filter parsing
+                filter = nil
+            }
+
+            if let topicArn = topicArn {
+                topicConfigurations.append(TopicConfiguration(id: id, topicArn: topicArn, events: events, filter: filter))
+            }
+        }
+
+        // Parse QueueConfigurations (similar pattern)
+        let queueConfigPattern = "<QueueConfiguration>(.*?)</QueueConfiguration>"
+        let queueConfigRegex = try! NSRegularExpression(pattern: queueConfigPattern, options: [.dotMatchesLineSeparators])
+        let queueConfigMatches = queueConfigRegex.matches(in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for match in queueConfigMatches {
+            let configContent = nsString.substring(with: match.range(at: 1))
+            let configNsString = configContent as NSString
+
+            var id: String?
+            var queueArn: String?
+            var events: [S3EventType] = []
+
+            // Parse ID
+            if let idMatch = try! NSRegularExpression(pattern: "<Id>(.*?)</Id>", options: []).firstMatch(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length)) {
+                id = configNsString.substring(with: idMatch.range(at: 1))
+            }
+
+            // Parse Queue ARN
+            if let queueMatch = try! NSRegularExpression(pattern: "<Queue>(.*?)</Queue>", options: []).firstMatch(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length)) {
+                queueArn = configNsString.substring(with: queueMatch.range(at: 1))
+            }
+
+            // Parse Events
+            let eventPattern = "<Event>(.*?)</Event>"
+            let eventRegex = try! NSRegularExpression(pattern: eventPattern, options: [])
+            let eventMatches = eventRegex.matches(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length))
+            for eventMatch in eventMatches {
+                let eventStr = configNsString.substring(with: eventMatch.range(at: 1))
+                if let event = S3EventType(rawValue: eventStr) {
+                    events.append(event)
+                }
+            }
+
+            if let queueArn = queueArn {
+                queueConfigurations.append(QueueConfiguration(id: id, queueArn: queueArn, events: events, filter: nil))
+            }
+        }
+
+        // Parse LambdaConfigurations (similar pattern)
+        let lambdaConfigPattern = "<CloudFunctionConfiguration>(.*?)</CloudFunctionConfiguration>"
+        let lambdaConfigRegex = try! NSRegularExpression(pattern: lambdaConfigPattern, options: [.dotMatchesLineSeparators])
+        let lambdaConfigMatches = lambdaConfigRegex.matches(in: xml, options: [], range: NSRange(location: 0, length: nsString.length))
+
+        for match in lambdaConfigMatches {
+            let configContent = nsString.substring(with: match.range(at: 1))
+            let configNsString = configContent as NSString
+
+            var id: String?
+            var lambdaFunctionArn: String?
+            var events: [S3EventType] = []
+
+            // Parse ID
+            if let idMatch = try! NSRegularExpression(pattern: "<Id>(.*?)</Id>", options: []).firstMatch(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length)) {
+                id = configNsString.substring(with: idMatch.range(at: 1))
+            }
+
+            // Parse Lambda ARN
+            if let lambdaMatch = try! NSRegularExpression(pattern: "<CloudFunction>(.*?)</CloudFunction>", options: []).firstMatch(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length)) {
+                lambdaFunctionArn = configNsString.substring(with: lambdaMatch.range(at: 1))
+            }
+
+            // Parse Events
+            let eventPattern = "<Event>(.*?)</Event>"
+            let eventRegex = try! NSRegularExpression(pattern: eventPattern, options: [])
+            let eventMatches = eventRegex.matches(in: configContent, options: [], range: NSRange(location: 0, length: configNsString.length))
+            for eventMatch in eventMatches {
+                let eventStr = configNsString.substring(with: eventMatch.range(at: 1))
+                if let event = S3EventType(rawValue: eventStr) {
+                    events.append(event)
+                }
+            }
+
+            if let lambdaFunctionArn = lambdaFunctionArn {
+                lambdaConfigurations.append(LambdaConfiguration(id: id, lambdaFunctionArn: lambdaFunctionArn, events: events, filter: nil))
+            }
+        }
+
+        return NotificationConfiguration(
+            topicConfigurations: topicConfigurations.isEmpty ? nil : topicConfigurations,
+            queueConfigurations: queueConfigurations.isEmpty ? nil : queueConfigurations,
+            lambdaConfigurations: lambdaConfigurations.isEmpty ? nil : lambdaConfigurations,
+            webhookConfigurations: nil
+        )
     }
 }
 
